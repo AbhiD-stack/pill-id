@@ -9,7 +9,6 @@ from PIL import Image
 from transformers import AutoImageProcessor, AutoModel
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
-
 ##
 # --- ProjectionHead class definition (copied from notebook) ---
 # This must exactly match the definition used during training.
