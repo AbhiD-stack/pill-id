@@ -1,0 +1,33 @@
+# Brings up the FastAPI backend behind Caddy (auto-HTTPS) on the EC2 host.
+# `restart: unless-stopped` recovers from crashes; the systemd unit
+# (pill-id.service) brings this up on boot, covering Spot instance replacement.
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    image: pill-id-backend:latest
+    restart: unless-stopped
+    environment:
+      - DEVICE=cpu
+      # Allow your Vercel frontend origin to call the API.
+      - CORS_ORIGINS=["https://your-frontend.vercel.app"]
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

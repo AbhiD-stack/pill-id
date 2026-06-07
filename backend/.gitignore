@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+# Resumable-build sidecar (build artifact); the names table itself is committed.
+app/data/ndc_names.checked.json
