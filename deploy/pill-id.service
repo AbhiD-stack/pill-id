@@ -1,0 +1,24 @@
+# systemd unit for auto-recovery on EC2 (incl. Spot instance replacement).
+# Install on the host:
+#   sudo cp deploy/pill-id.service /etc/systemd/system/
+#   sudo systemctl enable --now pill-id
+#
+# On boot it brings the docker-compose stack up; combined with the containers'
+# `restart: unless-stopped` policy this keeps the service running after crashes
+# and after a fresh Spot instance comes online.
+[Unit]
+Description=Pill ID backend (docker compose)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/pill-id/deploy
+ExecStart=/usr/bin/docker compose up -d --build
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

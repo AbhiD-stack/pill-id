@@ -1,0 +1,11 @@
+# Caddy automatically obtains + renews HTTPS certs (Let's Encrypt) for a real
+# domain pointed at this host, with ports 80 and 443 open.
+# Replace api.your-domain.com with your actual API hostname.
+api.your-domain.com {
+    reverse_proxy backend:8000
+
+    request_body {
+        max_size 16MB
+    }
+    encode gzip
+}
