@@ -13,7 +13,7 @@ import io
 from contextlib import asynccontextmanager
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
@@ -46,14 +46,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Pill ID API", version="0.1.0", lifespan=lifespan)
 
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_settings().cors_origins,
+    allow_origins=["*"],  # <-- Make sure this is exactly ["*"]
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
-
 
 @app.get("/api/health")
 def health():
@@ -69,8 +69,15 @@ def health():
 
 
 @app.post("/api/predict")
-async def predict(file: UploadFile = File(...)):
+async def predict(response: Response, file: UploadFile = File(None)): # <-- Change File(...) to File(None)
+    # Set the bypass cookie to destroy the localtunnel landing wall permanently
+    response.set_cookie(key="bypass-tunnel-reminder", value="true", path="/")
+    
+    if file is None:
+        raise HTTPException(status_code=400, detail="No file field provided in form data.")
+        
     clf: DinoV2PillClassifier | None = state["classifier"]
+    # ... rest of your code stays exactly the same ...
     if clf is None:
         raise HTTPException(status_code=503, detail="Model is still loading; try again shortly.")
 
@@ -114,7 +121,6 @@ async def predict(file: UploadFile = File(...)):
         )
 
     return {"predictions": results}
-
 
 @app.get("/api/reference-image")
 def reference_image(path: str = Query(..., description="Zip member path under ePillID_data/")):

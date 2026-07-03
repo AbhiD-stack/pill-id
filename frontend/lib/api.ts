@@ -19,6 +19,10 @@ export async function predictPill(file: File) {
   const response = await fetch(`${apiBase}/api/predict`, {
     method: "POST",
     body: formData,
+    headers: {
+      // This tells Ngrok to shut up and just serve the data instantly!
+      "ngrok-skip-browser-warning": "true", 
+    },
   });
 
   if (!response.ok) {
@@ -32,5 +36,8 @@ export async function predictPill(file: File) {
 export function referenceImageSrc(referenceImageUrl: string | null) {
   if (!referenceImageUrl) return "";
   if (referenceImageUrl.startsWith("http")) return referenceImageUrl;
-  return `${apiBase}${referenceImageUrl}`;
+  
+  // Append a bypass query flag to force Ngrok to let the asset through cleanly
+  const separator = referenceImageUrl.includes('?') ? '&' : '?';
+  return `${apiBase}${referenceImageUrl}${separator}ngrok-skip-browser-warning=true`;
 }
