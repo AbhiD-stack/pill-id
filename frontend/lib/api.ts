@@ -33,11 +33,31 @@ export async function predictPill(file: File) {
   return (await response.json()) as { predictions: PredictionResult[] };
 }
 
+// 1. Keep this dead simple to construct the absolute path
 export function referenceImageSrc(referenceImageUrl: string | null) {
   if (!referenceImageUrl) return "";
   if (referenceImageUrl.startsWith("http")) return referenceImageUrl;
+  return `${apiBase}${referenceImageUrl}`;
+}
+
+// 2. Add this brand new function to safely fetch the secure blob via headers
+export async function fetchSecureImageBlob(url: string): Promise<string> {
+  if (!url) return "";
   
-  // Append a bypass query flag to force Ngrok to let the asset through cleanly
-  const separator = referenceImageUrl.includes('?') ? '&' : '?';
-  return `${apiBase}${referenceImageUrl}${separator}ngrok-skip-browser-warning=true`;
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "ngrok-skip-browser-warning": "true"
+      }
+    });
+    
+    if (!response.ok) throw new Error("Image fetch failed");
+    
+    const blob = await response.blob();
+    return URL.createObjectURL(blob); // Generates a safe local 'blob://' link Safari will render perfectly
+  } catch (error) {
+    console.error("Error securing image resource:", error);
+    return url; // Fallback to raw URL if fetch fails
+  }
 }

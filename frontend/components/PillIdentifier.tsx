@@ -7,18 +7,40 @@ import {
   type PredictionResult,
 } from "@/lib/api";
 
+// Programmatic secure header fetch to cleanly bypass Ngrok's interstitial page
+async function fetchSecureImageBlob(url: string): Promise<string> {
+  if (!url) return "";
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "ngrok-skip-browser-warning": "true",
+      },
+    });
+    if (!response.ok) throw new Error("Image fetch failed");
+    const blob = await response.blob();
+    return URL.createObjectURL(blob); // Creates local secure temporary blob address
+  } catch (error) {
+    console.error("Error securing image resource:", error);
+    return url; // Fallback to raw string URL if something fails
+  }
+}
+
 export function PillIdentifier() {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [results, setResults] = useState<PredictionResult[] | null>(null);
+  const [rawResults, setRawResults] = useState<PredictionResult[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  
+  // Guardrail state: let doctors filter out noise for basic shapes
+  const [selectedShape, setSelectedShape] = useState<string>("all");
 
   const selectFile = useCallback(
     (f: File | null) => {
       setError(null);
-      setResults(null);
+      setRawResults(null);
       setFile(f);
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       setPreviewUrl(f ? URL.createObjectURL(f) : null);
@@ -41,16 +63,41 @@ export function PillIdentifier() {
     if (!file) return;
     setLoading(true);
     setError(null);
-    setResults(null);
+    setRawResults(null);
     try {
       const res = await predictPill(file);
-      setResults(res.predictions);
+      
+      if (res.predictions && res.predictions.length > 0) {
+        // Intercept references and resolve safe mobile-friendly streams
+        const securePredictions = await Promise.all(
+          res.predictions.map(async (pred) => {
+            if (pred.reference_image_url) {
+              const fullUrl = referenceImageSrc(pred.reference_image_url);
+              const safeBlobUrl = await fetchSecureImageBlob(fullUrl);
+              return { ...pred, reference_image_url: safeBlobUrl };
+            }
+            return pred;
+          })
+        );
+        setRawResults(securePredictions);
+      } else {
+        setRawResults([]);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
       setLoading(false);
     }
   }, [file]);
+
+  // Compute filtered results dynamically based on dropdown selector
+  const visibleResults = rawResults
+    ? selectedShape === "all"
+      ? rawResults
+      : rawResults.filter(
+          (p) => p.shape?.toLowerCase() === selectedShape.toLowerCase()
+        )
+    : null;
 
   return (
     <div className="grid gap-6 lg:grid-cols-5">
@@ -61,8 +108,6 @@ export function PillIdentifier() {
             1 · Upload a pill photo
           </h2>
 
-          {/* <label> so clicking natively opens the picker (no JS click
-              bubbling, which previously double-fired and dropped the file). */}
           <label
             onDragOver={(e) => {
               e.preventDefault();
@@ -121,6 +166,24 @@ export function PillIdentifier() {
             </p>
           )}
 
+          {/* Clinical Filter Section */}
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <label htmlFor="shape-filter" className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wider">
+              Clinical Guardrail Filter (Optional)
+            </label>
+            <select
+              id="shape-filter"
+              value={selectedShape}
+              onChange={(e) => setSelectedShape(e.target.value)}
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+            >
+              <option value="all">All Shapes (Pure Visual Backbone)</option>
+              <option value="round">Round</option>
+              <option value="oval">Oval / Oblong</option>
+              <option value="capsule">Capsule</option>
+            </select>
+          </div>
+
           <button
             onClick={onIdentify}
             disabled={!file || loading}
@@ -150,8 +213,8 @@ export function PillIdentifier() {
         </h2>
         {loading ? (
           <LoadingState />
-        ) : results ? (
-          <ResultsPyramid results={results} />
+        ) : visibleResults ? (
+          <ResultsPyramid results={visibleResults} />
         ) : (
           <EmptyState />
         )}
@@ -207,14 +270,14 @@ function ResultsPyramid({ results }: { results: PredictionResult[] }) {
   if (results.length === 0) {
     return (
       <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
-        No matches found.
+        No matches found matching this shape criteria.
       </div>
     );
   }
 
   const [first, ...rest] = results;
-  const row2 = rest.slice(0, 2); // ranks 2–3
-  const row3 = rest.slice(2, 4); // ranks 4–5
+  const row2 = rest.slice(0, 2); 
+  const row3 = rest.slice(2, 4); 
 
   return (
     <div className="space-y-3">
@@ -223,7 +286,7 @@ function ResultsPyramid({ results }: { results: PredictionResult[] }) {
       {row2.length > 0 && (
         <div className="grid grid-cols-2 gap-3">
           {row2.map((r, i) => (
-            <ResultCard key={`${r.label}-${i}`} r={r} rank={i + 2} size="md" />
+            <ResultCard key={`${r.ndc}-${i}`} r={r} rank={i + 2} size="md" />
           ))}
         </div>
       )}
@@ -231,7 +294,7 @@ function ResultsPyramid({ results }: { results: PredictionResult[] }) {
       {row3.length > 0 && (
         <div className="grid grid-cols-2 gap-3">
           {row3.map((r, i) => (
-            <ResultCard key={`${r.label}-${i}`} r={r} rank={i + 4} size="sm" />
+            <ResultCard key={`${r.ndc}-${i}`} r={r} rank={i + 4} size="sm" />
           ))}
         </div>
       )}
@@ -258,7 +321,7 @@ function ResultCard({
   const imgSize =
     size === "lg" ? "h-24 w-24" : size === "md" ? "h-16 w-16" : "h-12 w-12";
   const nameSize = size === "lg" ? "text-base" : "text-sm";
-  const showDetails = size !== "sm"; // imprint/color on lg + md
+  const showDetails = size !== "sm"; 
   const isTop = size === "lg";
 
   return (
@@ -273,7 +336,7 @@ function ResultCard({
         {r.reference_image_url ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={referenceImageSrc(r.reference_image_url)}
+            src={r.reference_image_url} // Accesses the secure local blob string generated programmatically
             alt={`Reference image for ${r.name ?? r.ndc}`}
             className={`${imgSize} rounded-xl border border-slate-200 object-contain`}
           />
