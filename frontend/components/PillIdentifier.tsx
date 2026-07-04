@@ -276,7 +276,7 @@ function ResultsPyramid({ results }: { results: PredictionResult[] }) {
       )}
 
       {/* ── Toggle Button for Extended Returns (6-10) ── */}
-      {row4.length > 0 && (
+      {true &&  (
         <div className="pt-2">
           <button
             type="button"
