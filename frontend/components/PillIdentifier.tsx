@@ -290,28 +290,19 @@ export function PillIdentifier() {
           <div>
             <h2 className="mb-2 text-sm font-bold text-slate-700">Step 2: Identification Results</h2>
             {loading ? (
-              <div className="h-24 animate-pulse rounded-2xl bg-slate-100" /> 
+              <div className="h-24 animate-pulse rounded-2xl bg-slate-100" />
             ) : rawResults ? (
-              <ResultsPyramid results={rawResults} showAll={showAll} setShowAll={setShowAll} /> 
+              <ResultsPyramid 
+                results={rawResults} 
+                showAll={showAll} 
+                setShowAll={setShowAll} 
+              />
             ) : (
-              <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-400">Awaiting specimen matrix.</div>
+              <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-400">
+                Awaiting specimen matrix context injection loop.
+              </div>
             )}
           </div>
-
-          {/* Core Batch Logs Mini Roll-up Visualizer */}
-          {studyBatchLogs.length > 0 && (
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-              <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wide mb-2">Current Batch Session Logs</h3>
-              <div className="max-h-32 overflow-y-auto border border-slate-100 rounded-xl divide-y divide-slate-100 text-[11px] font-mono">
-                {studyBatchLogs.map((run, index) => (
-                  <div key={index} className="p-2 flex justify-between items-center bg-slate-50/50">
-                    <span className="font-bold text-slate-700 truncate max-w-[140px]">#{index + 1}: {run.pill_name}</span>
-                    <span className="text-slate-400 text-[10px]">Conf: {run.confidence}% | Latency: {run.latency_sec}s</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </section>
       </div>
 
@@ -383,7 +374,11 @@ function ResultsPyramid({ results, showAll, setShowAll }: { results: PredictionR
           {r.reference_image_url && <img src={r.reference_image_url} alt="" className="h-14 w-14 rounded-xl object-contain shrink-0 border" />}
           <div className="min-w-0 flex-1">
             <p className="truncate font-bold text-slate-800 capitalize text-sm">{r.name || r.ndc}</p>
-            <p className="font-mono text-[10px] text-slate-400">NDC {r.ndc}</p>
+            <div className="flex gap-2 font-mono text-[10px] text-slate-500">
+              <span>NDC: {r.ndc}</span>
+              {r.imprint && <span>• Imprint: {r.imprint}</span>}
+              {r.color && <span>• Color: {r.color}</span>}
+            </div>
             <div className="mt-1 flex items-center gap-2">
               <div className="h-1 flex-1 rounded-full bg-slate-100">
                 <div className="h-full bg-sky-600" style={{ width: `${r.score_pct}%` }} />
@@ -393,7 +388,7 @@ function ResultsPyramid({ results, showAll, setShowAll }: { results: PredictionR
           </div>
         </div>
       ))}
-      <button onClick={() => setShowAll(!showAll)} className="text-xs font-bold text-sky-600 underline">
+      <button onClick={() => setShowAll(!showAll)} className="text-xs font-bold text-sky-600 underline px-1">
         {showAll ? "Show Top 5" : "Show 6-10 Results"}
       </button>
     </div>
