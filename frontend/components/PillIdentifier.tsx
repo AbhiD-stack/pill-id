@@ -345,31 +345,38 @@ export function PillIdentifier() {
             )}
           </div>
 
+          {/* Survey Buttons & Action Feedback */}
           {generatedToken && (
-            <div className="space-y-3 animate-fadeIn">
-              <div className="bg-slate-900 rounded-xl p-3 font-mono text-[10px] text-slate-300 max-h-24 overflow-y-auto border border-slate-800 leading-relaxed shadow-inner select-all">
-                {generatedToken}
+            <div className="space-y-4 animate-fadeIn">
+              <div className="grid grid-cols-2 gap-2">
+                <a
+                  href="https://forms.gle/qpxr9YVjVv5XBkAi6"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center justify-center gap-1 bg-amber-500 hover:bg-amber-600 text-white font-bold text-[10px] py-3 rounded-xl shadow transition-colors"
+                >
+                  CLINICIANS <span className="text-blue-500">↗</span>
+                </a>
+                <a
+                  href="https://forms.gle/3yijMVghFHrDpj7w6"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center justify-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[10px] py-3 rounded-xl shadow transition-colors"
+                >
+                  SENIORS <span className="text-blue-500">↗</span>
+                </a>
               </div>
               
-              {/* Dual Survey Buttons */}
-              <div className="grid grid-cols-1 gap-2 pt-1">
-                <a
-                  href="https://forms.gle/qpxr9YVjVv5XBkAi6" // Ensure this URL points to the Clinician form
-                  target="_blank"
-                  rel="noreferrer"
-                  className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs px-6 py-3 rounded-xl shadow transition-colors"
-                >
-                  Final Survey Form for CLINICIANS ↗
-                </a>
-                <a
-                  href="https://forms.gle/3yijMVghFHrDpj7w6" // Ensure this URL points to the Senior form
-                  target="_blank"
-                  rel="noreferrer"
-                  className="w-full flex items-center justify-center gap-2 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs px-6 py-3 rounded-xl shadow transition-colors"
-                >
-                  Final Survey Form for SENIORS ↗
-                </a>
-              </div>
+              {/* Only the Copy Button remains for final confirmation */}
+              <button
+                type="button"
+                onClick={handleCopyClipboard}
+                className={`w-full py-3 rounded-xl text-xs font-bold transition-all border shadow-sm ${
+                  copied ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+                }`}
+              >
+                {copied ? "COPIED!" : "COPY MASTER TOKEN TO CLIPBOARD"}
+              </button>
             </div>
           )}
         </section>
