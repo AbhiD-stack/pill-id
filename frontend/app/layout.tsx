@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Pill Identifier — Pilot",
+  title: "Med Recognition App — Pilot",
   description:
     "Experimental pilot tool that suggests possible matches for a pill image. Not for medical use.",
 };

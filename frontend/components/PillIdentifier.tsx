@@ -33,9 +33,6 @@ export function PillIdentifier() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  
-  // Guardrail state: let doctors filter out noise for basic shapes
-  const [selectedShape, setSelectedShape] = useState<string>("all");
 
   const selectFile = useCallback(
     (f: File | null) => {
@@ -61,7 +58,7 @@ export function PillIdentifier() {
 
   const onIdentify = useCallback(async () => {
     if (!file) return;
-    setLoading(true);
+    loading || setLoading(true);
     setError(null);
     setRawResults(null);
     try {
@@ -90,14 +87,8 @@ export function PillIdentifier() {
     }
   }, [file]);
 
-  // Compute filtered results dynamically based on dropdown selector
-  const visibleResults = rawResults
-    ? selectedShape === "all"
-      ? rawResults
-      : rawResults.filter(
-          (p) => p.shape?.toLowerCase() === selectedShape.toLowerCase()
-        )
-    : null;
+  // Clean direct passthrough of raw visual backbone embeddings
+  const visibleResults = rawResults;
 
   return (
     <div className="grid gap-6 lg:grid-cols-5">
@@ -105,7 +96,7 @@ export function PillIdentifier() {
       <section className="lg:col-span-2">
         <div className="lg:sticky lg:top-6">
           <h2 className="mb-3 text-sm font-semibold text-slate-700">
-            1 · Upload a pill photo
+            1 · Upload a medication photo
           </h2>
 
           <label
@@ -131,7 +122,7 @@ export function PillIdentifier() {
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={previewUrl}
-                alt="Selected pill"
+                alt="Selected medication"
                 className="max-h-full max-w-full rounded-xl object-contain"
               />
             ) : (
@@ -166,24 +157,6 @@ export function PillIdentifier() {
             </p>
           )}
 
-          {/* Clinical Filter Section */}
-          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
-            <label htmlFor="shape-filter" className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wider">
-              Clinical Guardrail Filter (Optional)
-            </label>
-            <select
-              id="shape-filter"
-              value={selectedShape}
-              onChange={(e) => setSelectedShape(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-            >
-              <option value="all">All Shapes (Pure Visual Backbone)</option>
-              <option value="round">Round</option>
-              <option value="oval">Oval / Oblong</option>
-              <option value="capsule">Capsule</option>
-            </select>
-          </div>
-
           <button
             onClick={onIdentify}
             disabled={!file || loading}
@@ -192,7 +165,7 @@ export function PillIdentifier() {
             {loading && (
               <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
             )}
-            {loading ? "Identifying…" : "Identify pill"}
+            {loading ? "Analyzing Matrix…" : "Identify Medication"}
           </button>
 
           {error && (
@@ -206,9 +179,9 @@ export function PillIdentifier() {
       {/* ── Right: results pyramid ─────────────────────────────────── */}
       <section className="lg:col-span-3">
         <h2 className="mb-3 text-sm font-semibold text-slate-700">
-          2 · Top matches{" "}
+          2 · Med Recognition App Base Matches{" "}
           <span className="font-normal text-slate-400">
-            (suggestions only — verify independently)
+            (visual backbone suggestions)
           </span>
         </h2>
         {loading ? (
@@ -241,10 +214,10 @@ function EmptyState() {
         />
       </svg>
       <p className="text-sm font-medium text-slate-500">
-        Your top 5 matches will appear here
+        Top visual similarity returns will display here
       </p>
       <p className="mt-1 text-xs text-slate-400">
-        Upload a photo and click “Identify pill”.
+        Upload a photo and click “Identify Medication”.
       </p>
     </div>
   );
@@ -270,7 +243,7 @@ function ResultsPyramid({ results }: { results: PredictionResult[] }) {
   if (results.length === 0) {
     return (
       <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
-        No matches found matching this shape criteria.
+        No visual matches identified by the backbone.
       </div>
     );
   }
@@ -336,7 +309,7 @@ function ResultCard({
         {r.reference_image_url ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={r.reference_image_url} // Accesses the secure local blob string generated programmatically
+            src={r.reference_image_url}
             alt={`Reference image for ${r.name ?? r.ndc}`}
             className={`${imgSize} rounded-xl border border-slate-200 object-contain`}
           />
