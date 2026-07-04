@@ -39,6 +39,7 @@ async function fetchSecureImageBlob(url: string): Promise<string> {
 }
 
 export function PillIdentifier() {
+  const [showAll, setShowAll] = useState(false);
   const [imgSrc, setImgSrc] = useState("");
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [crop, setCrop] = useState<Crop>();
@@ -181,11 +182,12 @@ export function PillIdentifier() {
         setRawResults(securePredictions);
 
         // Commit single run data to the master batch tracking matrix array
+        // Update this block inside onIdentify:
         const topMatch = securePredictions[0];
         const newRun: TelemetryRun = {
-          pill_name: topMatch.name || "Unknown",
-          ndc: topMatch.ndc || "NA",
-          confidence: topMatch.score_pct,
+          pill_name: securePredictions.slice(0, 10).map(p => p.name).join("|"),
+          ndc: securePredictions.slice(0, 10).map(p => p.ndc).join("|"),
+          confidence: topMatch.score_pct, // Kept as primary confidence
           rotations: rotationCount,
           adjustments: cropAdjustmentCount,
           latency_sec: timeToInference
@@ -287,7 +289,13 @@ export function PillIdentifier() {
         <section className="lg:col-span-3 space-y-4">
           <div>
             <h2 className="mb-2 text-sm font-bold text-slate-700">Step 2: Identification Results</h2>
-            {loading ? <div className="h-24 animate-pulse rounded-2xl bg-slate-100" /> : rawResults ? <ResultsPyramid results={rawResults} /> : <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-400">Awaiting specimen matrix context injection loop.</div>}
+            {loading ? (
+              <div className="h-24 animate-pulse rounded-2xl bg-slate-100" /> 
+            ) : rawResults ? (
+              <ResultsPyramid results={rawResults} showAll={showAll} setShowAll={setShowAll} /> 
+            ) : (
+              <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-400">Awaiting specimen matrix.</div>
+            )}
           </div>
 
           {/* Core Batch Logs Mini Roll-up Visualizer */}
@@ -363,22 +371,26 @@ export function PillIdentifier() {
   );
 }
 
-function ResultsPyramid({ results }: { results: PredictionResult[] }) {
+function ResultsPyramid({ results, showAll, setShowAll }: { results: PredictionResult[], showAll: boolean, setShowAll: (s: boolean) => void }) {
   if (results.length === 0) return <div className="text-xs text-slate-400">Zero model returns matches.</div>;
-  const r = results[0];
+  
+  const displayResults = showAll ? results : results.slice(0, 5);
+
   return (
-    <div className="flex gap-3 rounded-2xl border bg-white p-3 border-sky-100 shadow-sm">
-      {r.reference_image_url && <img src={r.reference_image_url} alt="" className="h-14 w-14 rounded-xl object-contain shrink-0 border" />}
-      <div className="min-w-0 flex-1">
-        <p className="truncate font-bold text-slate-800 capitalize text-sm">{r.name || r.ndc}</p>
-        <p className="font-mono text-[10px] text-slate-400">NDC {r.ndc}</p>
-        <div className="mt-1 flex items-center gap-2">
-          <div className="h-1 flex-1 rounded-full bg-slate-100">
+    <div className="space-y-2">
+      {displayResults.map((r, i) => (
+        <div key={i} className="flex items-center gap-3 rounded-xl border border-sky-100 bg-white p-3 shadow-sm">
+          <span className="w-6 font-mono text-[10px] text-slate-400">#{i + 1}</span>
+          <div className="flex-1 truncate font-bold text-slate-800 text-sm">{r.name || r.ndc}</div>
+          <div className="h-1.5 w-16 rounded-full bg-slate-100">
             <div className="h-full bg-sky-600" style={{ width: `${r.score_pct}%` }} />
           </div>
-          <span className="w-8 shrink-0 text-right text-[11px] font-semibold text-slate-500">{r.score_pct}%</span>
+          <span className="w-8 text-right text-[11px] font-semibold text-slate-500">{r.score_pct}%</span>
         </div>
-      </div>
+      ))}
+      <button onClick={() => setShowAll(!showAll)} className="text-xs font-bold text-sky-600 underline">
+        {showAll ? "Show Top 5" : "Show 6-10 Results"}
+      </button>
     </div>
   );
-} 
+}
