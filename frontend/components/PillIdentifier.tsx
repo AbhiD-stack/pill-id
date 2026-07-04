@@ -26,49 +26,62 @@ async function fetchSecureImageBlob(url: string): Promise<string> {
   }
 }
 
-// ── FIXED BACKGROUND CROPPER: Downscales for mobile memory & forces IMG_2328 (2).jpg ratio ──
-function autoCropCenter(imageFile: File): Promise<File> {
+// ── ADVANCED NORMALIZER: Automatically rotates portrait photos and forces a 2:1 landscape crop ──
+function autoCropCenterAndRotate(imageFile: File): Promise<File> {
   return new Promise((resolve) => {
     const img = new Image();
     img.src = URL.createObjectURL(imageFile);
     
     img.onload = () => {
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
+      // Step 1: Detect if the photo is portrait/vertical
+      const isPortrait = img.height > img.width;
+      
+      const normCanvas = document.createElement("canvas");
+      const normCtx = normCanvas.getContext("2d");
 
-      // 1. Downscale maximum dimensions so mobile devices don't crash from out-of-memory errors
       const MAX_WIDTH = 1200;
       let scale = 1;
-      if (img.width > MAX_WIDTH) {
-        scale = MAX_WIDTH / img.width;
+
+      // Step 2: Normalize orientation to horizontal layout
+      if (isPortrait) {
+        // If vertical, cap size based on height, then rotate 90 degrees clockwise
+        if (img.height > MAX_WIDTH) scale = MAX_WIDTH / img.height;
+        normCanvas.width = img.height * scale;
+        normCanvas.height = img.width * scale;
+        
+        normCtx?.translate(normCanvas.width / 2, normCanvas.height / 2);
+        normCtx?.rotate((90 * Math.PI) / 180);
+        normCtx?.drawImage(img, -(img.width * scale) / 2, -(img.height * scale) / 2, img.width * scale, img.height * scale);
+      } else {
+        // If already horizontal, just scale normally
+        if (img.width > MAX_WIDTH) scale = MAX_WIDTH / img.width;
+        normCanvas.width = img.width * scale;
+        normCanvas.height = img.height * scale;
+        normCtx?.drawImage(img, 0, 0, normCanvas.width, normCanvas.height);
       }
 
-      const fullWidth = img.width * scale;
-      const fullHeight = img.height * scale;
+      // Step 3: Extract a clean 2:1 landscape center block (matching IMG_2328 (2).jpg ratio)
+      const finalCanvas = document.createElement("canvas");
+      const finalCtx = finalCanvas.getContext("2d");
 
-      // 2. Exact aspect ratio matching IMG_2328 (2).jpg (roughly a 2:1 landscape box)
-      // We clip a wide center horizontal rectangle out of the frame
-      const cropWidth = fullWidth * 0.70;         // Snip 70% of the image width
-      const cropHeight = cropWidth * (512 / 1024); // Force strict 2:1 landscape proportion
+      const cropWidth = normCanvas.width * 0.75; // Take a clear 75% center focus box
+      const cropHeight = cropWidth * (512 / 1024); // Force strict 2:1 aspect ratio
       
-      const startX = (fullWidth - cropWidth) / 2;
-      const startY = (fullHeight - cropHeight) / 2;
+      const startX = (normCanvas.width - cropWidth) / 2;
+      const startY = (normCanvas.height - cropHeight) / 2;
 
-      canvas.width = cropWidth;
-      canvas.height = cropHeight;
+      finalCanvas.width = cropWidth;
+      finalCanvas.height = cropHeight;
 
-      if (ctx) {
-        // High quality image smoothing
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
-        
-        // Draw the cropped piece onto our canvas matrix
-        ctx.drawImage(
-          img,
-          startX / scale,
-          startY / scale,
-          cropWidth / scale,
-          cropHeight / scale,
+      if (finalCtx) {
+        finalCtx.imageSmoothingEnabled = true;
+        finalCtx.imageSmoothingQuality = "high";
+        finalCtx.drawImage(
+          normCanvas,
+          startX,
+          startY,
+          cropWidth,
+          cropHeight,
           0,
           0,
           cropWidth,
@@ -76,17 +89,17 @@ function autoCropCenter(imageFile: File): Promise<File> {
         );
       }
       
-      canvas.toBlob((blob) => {
+      finalCanvas.toBlob((blob) => {
         if (blob) {
-          const croppedFile = new File([blob], "cropped_pill.jpg", {
+          const croppedFile = new File([blob], "optimized_pill.jpg", {
             type: "image/jpeg",
             lastModified: Date.now(),
           });
           resolve(croppedFile);
         } else {
-          resolve(imageFile); // Emergency fallback
+          resolve(imageFile); 
         }
-      }, "image/jpeg", 0.85); // Optimized quality compression to keep upload package light
+      }, "image/jpeg", 0.90);
     };
     
     img.onerror = () => resolve(imageFile);
@@ -98,29 +111,46 @@ export function PillIdentifier() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [rawResults, setRawResults] = useState<PredictionResult[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [processingImage, setProcessingImage] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
 
-  const selectFile = useCallback(
-    (f: File | null) => {
-      setError(null);
-      setRawResults(null);
+  // Intercepts the uploaded file instantly, optimizes it, and prints the result to your screen preview
+  const handleFileSelection = useCallback(async (f: File | null) => {
+    setError(null);
+    setRawResults(null);
+    if (!f) {
+      setFile(null);
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      setPreviewUrl(null);
+      return;
+    }
+
+    setProcessingImage(true);
+    try {
+      const optimizedFile = await autoCropCenterAndRotate(f);
+      setFile(optimizedFile);
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      setPreviewUrl(URL.createObjectURL(optimizedFile));
+    } catch (err) {
+      console.error("Image optimization failure:", err);
       setFile(f);
       if (previewUrl) URL.revokeObjectURL(previewUrl);
-      setPreviewUrl(f ? URL.createObjectURL(f) : null);
-    },
-    [previewUrl]
-  );
+      setPreviewUrl(URL.createObjectURL(f));
+    } finally {
+      setProcessingImage(false);
+    }
+  }, [previewUrl]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragging(false);
       const f = e.dataTransfer.files?.[0];
-      if (f && f.type.startsWith("image/")) selectFile(f);
+      if (f && f.type.startsWith("image/")) handleFileSelection(f);
       else if (f) setError("Please drop an image file (JPG or PNG).");
     },
-    [selectFile]
+    [handleFileSelection]
   );
 
   const onIdentify = useCallback(async () => {
@@ -129,11 +159,8 @@ export function PillIdentifier() {
     setError(null);
     setRawResults(null);
     try {
-      // Process the structural resize and landscape crop cleanly behind the scenes
-      const processedFile = await autoCropCenter(file);
-
-      // Ship optimized layout binary to the python server backend
-      const res = await predictPill(processedFile);
+      // The file state is already perfectly cropped/rotated, send it directly!
+      const res = await predictPill(file);
       
       if (res.predictions && res.predictions.length > 0) {
         const securePredictions = await Promise.all(
@@ -185,14 +212,22 @@ export function PillIdentifier() {
               type="file"
               accept="image/*"
               className="hidden"
-              onChange={(e) => selectFile(e.target.files?.[0] ?? null)}
+              onChange={(e) => handleFileSelection(e.target.files?.[0] ?? null)}
             />
             {previewUrl ? (
-              <img
-                src={previewUrl}
-                alt="Selected medication"
-                className="max-h-full max-w-full rounded-xl object-contain"
-              />
+              <div className="relative flex h-full w-full items-center justify-center">
+                <img
+                  src={previewUrl}
+                  alt="Selected medication"
+                  className="max-h-full max-w-full rounded-xl object-contain shadow-sm"
+                />
+                {processingImage && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 rounded-xl backdrop-blur-sm">
+                    <span className="h-6 w-6 animate-spin rounded-full border-2 border-sky-600 border-t-transparent mb-2" />
+                    <p className="text-xs font-semibold text-slate-600">Optimizing Alignment...</p>
+                  </div>
+                )}
+              </div>
             ) : (
               <>
                 <svg
@@ -219,15 +254,15 @@ export function PillIdentifier() {
             )}
           </label>
 
-          {file && (
-            <p className="mt-2 truncate text-center text-xs text-slate-500">
-              {file.name}
+          {file && !processingImage && (
+            <p className="mt-2 truncate text-center text-xs font-mono text-emerald-600 bg-emerald-50 border border-emerald-100 rounded-lg py-1 px-2">
+              ✓ Image Horizontally Auto-Aligned
             </p>
           )}
 
           <button
             onClick={onIdentify}
-            disabled={!file || loading}
+            disabled={!file || loading || processingImage}
             className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
           >
             {loading && (
