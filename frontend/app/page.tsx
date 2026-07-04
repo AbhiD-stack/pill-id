@@ -7,7 +7,7 @@ export default function Home() {
       <header className="mb-6">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
-            <span aria-hidden="true">💊</span> Pill Identifier
+            <span aria-hidden="true">💊</span> Med Recognition App
           </h1>
           <span className="rounded-full bg-sky-100 px-2.5 py-0.5 text-xs font-semibold text-sky-700">
             Pilot
