@@ -19,47 +19,77 @@ async function fetchSecureImageBlob(url: string): Promise<string> {
     });
     if (!response.ok) throw new Error("Image fetch failed");
     const blob = await response.blob();
-    return URL.createObjectURL(blob); // Creates local secure temporary blob address
+    return URL.createObjectURL(blob); 
   } catch (error) {
     console.error("Error securing image resource:", error);
-    return url; // Fallback to raw string URL if something fails
+    return url; 
   }
 }
 
-// ── NEW HELPER: Automated, senior-friendly background center cropping ──
+// ── FIXED BACKGROUND CROPPER: Downscales for mobile memory & forces IMG_2328 (2).jpg ratio ──
 function autoCropCenter(imageFile: File): Promise<File> {
   return new Promise((resolve) => {
     const img = new Image();
     img.src = URL.createObjectURL(imageFile);
+    
     img.onload = () => {
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d");
 
-      // Define a bounding crop area taking the center 60% (eliminates 40% of the surrounding border/leather noise)
-      const cropWidth = img.width * 0.6;
-      const cropHeight = img.height * 0.6;
-      const startX = (img.width - cropWidth) / 2;
-      const startY = (img.height - cropHeight) / 2;
+      // 1. Downscale maximum dimensions so mobile devices don't crash from out-of-memory errors
+      const MAX_WIDTH = 1200;
+      let scale = 1;
+      if (img.width > MAX_WIDTH) {
+        scale = MAX_WIDTH / img.width;
+      }
+
+      const fullWidth = img.width * scale;
+      const fullHeight = img.height * scale;
+
+      // 2. Exact aspect ratio matching IMG_2328 (2).jpg (roughly a 2:1 landscape box)
+      // We clip a wide center horizontal rectangle out of the frame
+      const cropWidth = fullWidth * 0.70;         // Snip 70% of the image width
+      const cropHeight = cropWidth * (512 / 1024); // Force strict 2:1 landscape proportion
+      
+      const startX = (fullWidth - cropWidth) / 2;
+      const startY = (fullHeight - cropHeight) / 2;
 
       canvas.width = cropWidth;
       canvas.height = cropHeight;
 
-      // Slice out the center segment
-      ctx?.drawImage(img, startX, startY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+      if (ctx) {
+        // High quality image smoothing
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        
+        // Draw the cropped piece onto our canvas matrix
+        ctx.drawImage(
+          img,
+          startX / scale,
+          startY / scale,
+          cropWidth / scale,
+          cropHeight / scale,
+          0,
+          0,
+          cropWidth,
+          cropHeight
+        );
+      }
       
       canvas.toBlob((blob) => {
         if (blob) {
-          const croppedFile = new File([blob], imageFile.name, {
+          const croppedFile = new File([blob], "cropped_pill.jpg", {
             type: "image/jpeg",
             lastModified: Date.now(),
           });
           resolve(croppedFile);
         } else {
-          resolve(imageFile); // Safe fallback to original if blob synthesis drops
+          resolve(imageFile); // Emergency fallback
         }
-      }, "image/jpeg", 0.95);
+      }, "image/jpeg", 0.85); // Optimized quality compression to keep upload package light
     };
-    img.onerror = () => resolve(imageFile); // Fallback to original on error
+    
+    img.onerror = () => resolve(imageFile);
   });
 }
 
@@ -95,18 +125,17 @@ export function PillIdentifier() {
 
   const onIdentify = useCallback(async () => {
     if (!file) return;
-    loading || setLoading(true);
+    setLoading(true);
     setError(null);
     setRawResults(null);
     try {
-      // 1. Process and extract the optimized center section behind the scenes
+      // Process the structural resize and landscape crop cleanly behind the scenes
       const processedFile = await autoCropCenter(file);
 
-      // 2. Submit the cleaner file straight over your ngrok pipeline
+      // Ship optimized layout binary to the python server backend
       const res = await predictPill(processedFile);
       
       if (res.predictions && res.predictions.length > 0) {
-        // Intercept references and resolve safe mobile-friendly streams
         const securePredictions = await Promise.all(
           res.predictions.map(async (pred) => {
             if (pred.reference_image_url) {
@@ -126,14 +155,13 @@ export function PillIdentifier() {
     } finally {
       setLoading(false);
     }
-  }, [file, loading]);
+  }, [file]);
 
-  // Clean direct passthrough of raw visual backbone embeddings
   const visibleResults = rawResults;
 
   return (
     <div className="grid gap-6 lg:grid-cols-5">
-      {/* ── Left: upload ───────────────────────────────────────────── */}
+      {/* Left Column */}
       <section className="lg:col-span-2">
         <div className="lg:sticky lg:top-6">
           <h2 className="mb-3 text-sm font-semibold text-slate-700">
@@ -160,7 +188,6 @@ export function PillIdentifier() {
               onChange={(e) => selectFile(e.target.files?.[0] ?? null)}
             />
             {previewUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={previewUrl}
                 alt="Selected medication"
@@ -217,7 +244,7 @@ export function PillIdentifier() {
         </div>
       </section>
 
-      {/* ── Right: results pyramid ─────────────────────────────────── */}
+      {/* Right Column */}
       <section className="lg:col-span-3">
         <h2 className="mb-3 text-sm font-semibold text-slate-700">
           2 · Med Recognition App Base Matches{" "}
@@ -294,7 +321,7 @@ function ResultsPyramid({ results }: { results: PredictionResult[] }) {
   const [first, ...rest] = results;
   const row2 = rest.slice(0, 2); 
   const row3 = rest.slice(2, 4); 
-  const row4 = rest.slice(4, 9); // Pulls matches 6 through 10
+  const row4 = rest.slice(4, 9); 
 
   return (
     <div className="space-y-3">
@@ -316,7 +343,6 @@ function ResultsPyramid({ results }: { results: PredictionResult[] }) {
         </div>
       )}
 
-      {/* ── Toggle Button for Extended Returns (6-10) ── */}
       <div className="pt-2">
         <button
           type="button"
@@ -327,7 +353,6 @@ function ResultsPyramid({ results }: { results: PredictionResult[] }) {
         </button>
       </div>
 
-      {/* ── Render Row 4 conditionally when button is activated ── */}
       {showExtended && (
         <div className="grid grid-cols-2 gap-3 pt-1 animate-fadeIn">
           {row4.length > 0 ? (
@@ -361,40 +386,26 @@ function ResultCard({
   rank: number;
   size: CardSize;
 }) {
-  const imgSize =
-    size === "lg" ? "h-24 w-24" : size === "md" ? "h-16 w-16" : "h-12 w-12";
+  const imgSize = size === "lg" ? "h-24 w-24" : size === "md" ? "h-16 w-16" : "h-12 w-12";
   const nameSize = size === "lg" ? "text-base" : "text-sm";
   const showDetails = size !== "sm"; 
   const isTop = size === "lg";
 
   return (
-    <div
-      className={`flex gap-3 rounded-2xl border bg-white p-3 ${
-        isTop
-          ? "border-sky-200 shadow-sm ring-1 ring-sky-100"
-          : "border-slate-200"
-      }`}
-    >
+    <div className={`flex gap-3 rounded-2xl border bg-white p-3 ${isTop ? "border-sky-200 shadow-sm ring-1 ring-sky-100" : "border-slate-200"}`}>
       <div className="relative shrink-0">
         {r.reference_image_url ? (
-          // eslint-disable-next-line @next/next/no-img-element
           <img
             src={r.reference_image_url}
             alt={`Reference image for ${r.name ?? r.ndc}`}
             className={`${imgSize} rounded-xl border border-slate-200 object-contain`}
           />
         ) : (
-          <div
-            className={`${imgSize} flex items-center justify-center rounded-xl border border-dashed border-slate-200 text-[10px] text-slate-400`}
-          >
+          <div className={`${imgSize} flex items-center justify-center rounded-xl border border-dashed border-slate-200 text-[10px] text-slate-400`}>
             no image
           </div>
         )}
-        <span
-          className={`absolute -left-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-bold text-white ${
-            isTop ? "bg-sky-600" : "bg-slate-400"
-          }`}
-        >
+        <span className={`absolute -left-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-bold text-white ${isTop ? "bg-sky-600" : "bg-slate-400"}`}>
           {rank}
         </span>
       </div>
@@ -408,9 +419,7 @@ function ResultCard({
 
         {r.name ? (
           <>
-            <p
-              className={`truncate font-semibold capitalize text-slate-800 ${nameSize}`}
-            >
+            <p className={`truncate font-semibold capitalize text-slate-800 ${nameSize}`}>
               {r.name}
             </p>
             <p className="font-mono text-xs text-slate-400">NDC {r.ndc}</p>
@@ -428,8 +437,7 @@ function ResultCard({
           <p className="mt-0.5 truncate text-xs text-slate-500">
             {r.imprint && (
               <span>
-                Imprint{" "}
-                <span className="font-medium text-slate-700">{r.imprint}</span>
+                Imprint <span className="font-medium text-slate-700">{r.imprint}</span>
               </span>
             )}
             {r.imprint && r.color && " · "}
@@ -440,9 +448,7 @@ function ResultCard({
         <div className="mt-1.5 flex items-center gap-2">
           <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
             <div
-              className={`h-full rounded-full ${
-                isTop ? "bg-sky-600" : "bg-sky-400"
-              }`}
+              className={`h-full rounded-full ${isTop ? "bg-sky-600" : "bg-sky-400"}`}
               style={{ width: `${Math.min(100, r.score_pct)}%` }}
             />
           </div>
