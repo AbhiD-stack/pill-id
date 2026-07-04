@@ -350,14 +350,24 @@ export function PillIdentifier() {
               <div className="bg-slate-900 rounded-xl p-3 font-mono text-[10px] text-slate-300 max-h-24 overflow-y-auto border border-slate-800 leading-relaxed shadow-inner select-all">
                 {generatedToken}
               </div>
-              <div className="text-center pt-1">
+              
+              {/* Dual Survey Buttons */}
+              <div className="grid grid-cols-1 gap-2 pt-1">
                 <a
-                  href={GOOGLE_FORM_URL}
+                  href="https://forms.gle/qpxr9YVjVv5XBkAi6" // Ensure this URL points to the Clinician form
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-1 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs px-6 py-2.5 rounded-xl shadow transition-colors"
+                  className="w-full flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs px-6 py-3 rounded-xl shadow transition-colors"
                 >
-                  🚀 Open Final Verification Form Suite ↗
+                  Final Survey Form for CLINICIANS ↗
+                </a>
+                <a
+                  href="https://forms.gle/3yijMVghFHrDpj7w6" // Ensure this URL points to the Senior form
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-full flex items-center justify-center gap-2 bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs px-6 py-3 rounded-xl shadow transition-colors"
+                >
+                  Final Survey Form for SENIORS ↗
                 </a>
               </div>
             </div>
