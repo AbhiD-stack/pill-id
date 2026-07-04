@@ -26,7 +26,7 @@ async function fetchSecureImageBlob(url: string): Promise<string> {
   }
 }
 
-// ── UNIVERSAL SQUARE NORMALIZER: Preserves circles AND capsules perfectly ──
+// ── ADAPTIVE SQUARE NORMALIZER: Automatically scales crop radius based on pill geometry ──
 function autoCropCenterAndRotate(imageFile: File): Promise<File> {
   return new Promise((resolve) => {
     const img = new Image();
@@ -41,7 +41,7 @@ function autoCropCenterAndRotate(imageFile: File): Promise<File> {
       const MAX_WIDTH = 1200;
       let scale = 1;
 
-      // 1. Standardize orientation to a standard horizontal base layer
+      // 1. Standardize orientation to horizontal layout
       if (isPortrait) {
         if (img.height > MAX_WIDTH) scale = MAX_WIDTH / img.height;
         normCanvas.width = img.height * scale;
@@ -57,14 +57,19 @@ function autoCropCenterAndRotate(imageFile: File): Promise<File> {
         normCtx?.drawImage(img, 0, 0, normCanvas.width, normCanvas.height);
       }
 
-      // 2. Extract a perfect 1:1 SQUARE box from the center
-      // This guarantees round pills don't get clipped, while long pills still fit comfortably side-to-side
+      // 2. DYNAMIC BOUNDING BOX: Scales dynamically so long pills don't have their ends chopped off
       const finalCanvas = document.createElement("canvas");
       const finalCtx = finalCanvas.getContext("2d");
 
-      // Determine the size of the square based on the shortest side available
-      const squareSize = Math.min(normCanvas.width, normCanvas.height) * 0.85; // 85% window captures the whole pill
+      // Calculate aspect ratio of normalized base layer
+      const sideRatio = normCanvas.width / normCanvas.height;
       
+      // If the image is highly elongated (like a capsule on a tray), grab more width context (95%).
+      // Otherwise, keep a tighter focus window for standard/round pills.
+      const cropFactor = sideRatio > 1.4 ? 0.95 : 0.85;
+      const squareSize = Math.min(normCanvas.width, normCanvas.height) * cropFactor;
+      
+      // Calculate start offsets centered cleanly
       const startX = (normCanvas.width - squareSize) / 2;
       const startY = (normCanvas.height - squareSize) / 2;
 
@@ -220,7 +225,7 @@ export function PillIdentifier() {
                 {processingImage && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 rounded-xl backdrop-blur-sm">
                     <span className="h-6 w-6 animate-spin rounded-full border-2 border-sky-600 border-t-transparent mb-2" />
-                    <p className="text-xs font-semibold text-slate-600">Optimizing Aspect Ratio...</p>
+                    <p className="text-xs font-semibold text-slate-600">Adjusting bounding frames...</p>
                   </div>
                 )}
               </div>
@@ -252,7 +257,7 @@ export function PillIdentifier() {
 
           {file && !processingImage && (
             <p className="mt-2 truncate text-center text-xs font-mono text-emerald-600 bg-emerald-50 border border-emerald-100 rounded-lg py-1 px-2">
-              ✓ Image Auto-Normalized to Universal Square Box
+              ✓ Geometry Adjusted Square Frame Created
             </p>
           )}
 
@@ -295,7 +300,6 @@ export function PillIdentifier() {
   );
 }
 
-// ... (Rest of your component styling remains exactly the same below)
 function EmptyState() { return ( <div className="flex min-h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white/50 p-8 text-center"> <svg className="mb-3 h-10 w-10 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden="true" > <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /> </svg> <p className="text-sm font-medium text-slate-500"> Top visual similarity returns will display here </p> <p className="mt-1 text-xs text-slate-400"> Upload a photo and click “Identify Medication”. </p></div> ); }
 function LoadingState() { return ( <div className="space-y-3"> <div className="h-40 animate-pulse rounded-2xl bg-slate-100" /> <div className="grid grid-cols-2 gap-3"> <div className="h-24 animate-pulse rounded-2xl bg-slate-100" /> <div className="h-24 animate-pulse rounded-2xl bg-slate-100" /> </div> <div className="grid grid-cols-2 gap-3"> <div className="h-20 animate-pulse rounded-2xl bg-slate-100" /> <div className="h-20 animate-pulse rounded-2xl bg-slate-100" /> </div> </div> ); }
 function ResultsPyramid({ results }: { results: PredictionResult[] }) { const [showExtended, setShowExtended] = useState(false); if (results.length === 0) { return ( <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500"> No visual matches identified by the backbone. </div> ); } const [first, ...rest] = results; const row2 = rest.slice(0, 2); const row3 = rest.slice(2, 4); const row4 = rest.slice(4, 9); return ( <div className="space-y-3"> <ResultCard r={first} rank={1} size="lg" /> {row2.length > 0 && ( <div className="grid grid-cols-2 gap-3"> {row2.map((r, i) => ( <ResultCard key={`${r.ndc}-${i}`} r={r} rank={i + 2} size="md" /> ))} </div> )} {row3.length > 0 && ( <div className="grid grid-cols-2 gap-3"> {row3.map((r, i) => ( <ResultCard key={`${r.ndc}-${i}`} r={r} rank={i + 4} size="sm" /> ))} </div> )} <div className="pt-2"> <button type="button" onClick={() => setShowExtended(!showExtended)} className="flex w-full items-center justify-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-100" > {showExtended ? "Hide Extended Matches" : `Reveal Extended Matches (6-10)`} </button> </div> {showExtended && ( <div className="grid grid-cols-2 gap-3 pt-1 animate-fadeIn"> {row4.length > 0 ? ( row4.map((r, i) => ( <ResultCard key={`${r.ndc || i}-${i}`} r={r} rank={i + 6} size="sm" /> )) ) : ( <div className="col-span-2 rounded-xl bg-slate-50 p-4 text-center text-xs text-slate-400 border border-dashed border-slate-200"> The backend model inference limit is currently capped at 5 results. </div> )} </div> )} <p className="pt-1 text-xs text-slate-400"> Match score reflects visual similarity to reference images, not a confirmed identification. </p></div> ); }
