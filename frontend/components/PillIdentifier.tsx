@@ -254,20 +254,25 @@ export function PillIdentifier() {
                 <p className="font-semibold text-slate-600 text-xs">👉 Tap Here to Select Photo 👈</p>
               </label>
             ) : (
-              <div className="rounded-2xl border border-slate-200 bg-slate-950 p-3 flex flex-col items-center">
-                {/* Friction Design Metric 1: Small constrained canvas height footprint */}
-                <div className="max-h-36 overflow-auto flex items-center justify-center">
-                  <ReactCrop crop={crop} onChange={handleCropChange} onComplete={(c) => setCompletedCrop(c)} aspect={1} keepSelection>
-                    <img ref={imgRef} alt="Source" src={imgSrc} onLoad={onImageLoad} style={{ transform: `rotate(${rotation}deg)` }} className="max-h-32 object-contain" />
-                  </ReactCrop>
-                </div>
+              // Inside your return block, under "Step 1"
+                <div className="rounded-2xl border border-slate-200 bg-slate-950 p-6 flex flex-col items-center"> 
+                  {/* Changed p-3 to p-6 for more padding */}
+                  
+                  {/* Increased max-h-36 to max-h-80 to make the preview area much larger */}
+                  <div className="max-h-80 overflow-auto flex items-center justify-center">
+                    <ReactCrop crop={crop} onChange={handleCropChange} onComplete={(c) => setCompletedCrop(c)} aspect={1} keepSelection>
+                      {/* Increased max-h-32 to max-h-72 for the actual image display */}
+                      <img ref={imgRef} alt="Source" src={imgSrc} onLoad={onImageLoad} style={{ transform: `rotate(${rotation}deg)` }} className="max-h-72 object-contain" />
+                    </ReactCrop>
+                  </div>
                 
                 {/* Friction Design Metric 2: Microscopic layout touch boundary targets */}
-                <div className="mt-3 flex w-full justify-between items-center px-1">
-                  <button type="button" onClick={() => { setRotation((r) => (r + 90) % 360); setRotationCount((c) => c + 1); }} className="text-[9px] font-bold rounded bg-slate-800 text-slate-200 hover:bg-slate-700 px-1.5 py-0.5">
+                <div className="mt-6 flex w-full justify-between items-center px-2">
+                  {/* Increased text size and padding for better accessibility */}
+                  <button type="button" onClick={() => { setRotation((r) => (r + 90) % 360); setRotationCount((c) => c + 1); }} className="text-xs font-bold rounded bg-slate-800 text-slate-200 hover:bg-slate-700 px-4 py-2">
                     Turn 90°
                   </button>
-                  <button type="button" onClick={() => handleFileSelection(null)} className="text-[9px] font-bold rounded bg-slate-800 text-rose-400 hover:bg-slate-700 px-1.5 py-0.5">
+                  <button type="button" onClick={() => handleFileSelection(null)} className="text-xs font-bold rounded bg-slate-800 text-rose-400 hover:bg-slate-700 px-4 py-2">
                     Clear Image
                   </button>
                 </div>
@@ -287,9 +292,10 @@ export function PillIdentifier() {
 
         {/* Step 2 Identification Returns Column */}
         {/* Update this part of your return block */}
-<section className="lg:col-span-3 space-y-6"> {/* Increased from space-y-4 to space-y-6 */}
-  <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm"> {/* Added background and padding to the whole section */}
-    <h2 className="mb-4 text-lg font-bold text-slate-800">Step 2: Identification Results</h2> {/* Increased text size */}
+{/* Step 2 Identification Returns Column */}
+        <section className="lg:col-span-3 space-y-4">
+          <div>
+            <h2 className="mb-2 text-sm font-bold text-slate-700">Step 2: Identification Results</h2>
             {loading ? (
               <div className="h-24 animate-pulse rounded-2xl bg-slate-100" />
             ) : rawResults ? (
@@ -368,20 +374,14 @@ function ResultsPyramid({ results, showAll, setShowAll }: { results: PredictionR
   
   const displayResults = showAll ? results : results.slice(0, 5);
 
-  // Inside ResultsPyramid function
-return (
-  <div className="space-y-4"> {/* Increased from space-y-3 to space-y-4 */}
-    {displayResults.map((r, i) => (
-      <div key={i} className="flex gap-4 rounded-2xl border bg-white p-4 border-sky-100 shadow-md"> {/* Increased p-3 to p-4 and gap-3 to gap-4 */}
-        {r.reference_image_url && <img src={r.reference_image_url} alt="" className="h-20 w-20 rounded-xl object-contain shrink-0 border" />} {/* Increased size from h-14 w-14 to h-20 w-20 */}
-        <div className="min-w-0 flex-1 py-1"> {/* Added py-1 to align content better */}
-          <p className="truncate font-bold text-slate-800 capitalize text-base">{r.name || r.ndc}</p> {/* Increased text-sm to text-base */}
-          
-          <div className="flex gap-2 font-mono text-[10px] text-slate-500">
-              <span>NDC: {r.ndc}</span>
-              {r.imprint && <span>• Imprint: {r.imprint}</span>}
-              {r.color && <span>• Color: {r.color}</span>}
-            </div>
+  return (
+    <div className="space-y-3">
+      {displayResults.map((r, i) => (
+        <div key={i} className="flex gap-3 rounded-2xl border bg-white p-3 border-sky-100 shadow-sm">
+          {r.reference_image_url && <img src={r.reference_image_url} alt="" className="h-14 w-14 rounded-xl object-contain shrink-0 border" />}
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-bold text-slate-800 capitalize text-sm">{r.name || r.ndc}</p>
+            <p className="font-mono text-[10px] text-slate-400">NDC {r.ndc}</p>
             <div className="mt-1 flex items-center gap-2">
               <div className="h-1 flex-1 rounded-full bg-slate-100">
                 <div className="h-full bg-sky-600" style={{ width: `${r.score_pct}%` }} />
