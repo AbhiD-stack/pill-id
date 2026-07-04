@@ -157,8 +157,7 @@ export function PillIdentifier() {
 
   const onIdentify = useCallback(async () => {
     if (!imgRef.current || !completedCrop) return; // Add this check      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
+      
     setLoading(true);
     setError(null);
     setRawResults(null);
