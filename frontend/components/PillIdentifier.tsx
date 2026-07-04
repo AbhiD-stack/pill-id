@@ -317,28 +317,9 @@ export function PillIdentifier() {
         {studyBatchLogs.length > 0 && (
           <section className="border border-slate-200 bg-slate-50 rounded-2xl p-5 shadow-sm space-y-4 animate-fadeIn">
             <h3 className="text-sm font-bold text-slate-900">Step 3: Export & Feedback</h3>
-            
-            <div className="grid grid-cols-2 gap-2">
-              {/* Clinician Survey Button */}
-              <a
-                href="https://forms.gle/qpxr9YVjVv5XBkAi6"
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center justify-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] py-3 rounded-xl shadow transition-colors"
-              >
-                CLINICIANS <span className="text-blue-500">↗</span>
-              </a>
-              
-              {/* Senior Survey Button */}
-              <a
-                href="https://forms.gle/3yijMVghFHrDpj7w6"
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center justify-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[10px] py-3 rounded-xl shadow transition-colors"
-              >
-                SENIORS <span className="text-blue-500">↗</span>
-              </a>
-            </div>
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              When ready, click the button below to capture the latest data. Then, paste it into your specific survey form.
+            </p>
 
             {/* Combined Compile & Copy Button */}
             <button
@@ -353,12 +334,37 @@ export function PillIdentifier() {
                   setTimeout(() => setCopied(false), 2000);
                 });
               }}
-              className={`w-full py-4 rounded-xl text-xs font-bold transition-all border shadow-sm ${
+              className={`w-full py-3 rounded-xl text-xs font-bold transition-all border shadow-sm ${
                 copied ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-emerald-700 border-emerald-700 hover:bg-emerald-50"
               }`}
             >
               {copied ? "COPIED TO CLIPBOARD!" : "REFRESH & COPY MASTER TOKEN"}
             </button>
+
+            {/* Instruction Text */}
+            <p className="text-[10px] text-slate-400 italic text-center uppercase tracking-wider">
+              1. Copy Token ── 2. Open Survey ── 3. Paste Token
+            </p>
+
+            {/* Survey Buttons */}
+            <div className="grid grid-cols-2 gap-2">
+              <a
+                href="https://forms.gle/qpxr9YVjVv5XBkAi6"
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center justify-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] py-3 rounded-xl shadow transition-colors"
+              >
+                CLINICIANS <span className="text-blue-500">↗</span>
+              </a>
+              <a
+                href="https://forms.gle/3yijMVghFHrDpj7w6"
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center justify-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[10px] py-3 rounded-xl shadow transition-colors"
+              >
+                SENIORS <span className="text-blue-500">↗</span>
+              </a>
+            </div>
           </section>
         )}
 
