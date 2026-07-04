@@ -313,74 +313,54 @@ export function PillIdentifier() {
         </section>
       </div>
 
-      {/* ── MASTER DATA COMPILATION TERMINAL AREA ── */}
-      {studyBatchLogs.length > 0 && (
-        <section className="border border-emerald-200 bg-emerald-50/20 rounded-2xl p-5 shadow-sm space-y-4 animate-fadeIn">
-          <div>
-            <h3 className="text-sm font-bold text-emerald-900">Step 3: End of Session Report Compiler</h3>
-            <p className="text-xs text-slate-600 mt-1 leading-relaxed">
-              When you have finished testing your assignment group of pills, click the green compilation button below. This transforms all individual test records into an analytical block to paste into Question 1 on your study questionnaire.
-            </p>
-          </div>
+      {/* ── STEP 3: COMPILATION & SURVEYS ── */}
+        {studyBatchLogs.length > 0 && (
+          <section className="border border-slate-200 bg-slate-50 rounded-2xl p-5 shadow-sm space-y-4 animate-fadeIn">
+            <h3 className="text-sm font-bold text-slate-900">Step 3: Export & Feedback</h3>
+            
+            <div className="grid grid-cols-2 gap-2">
+              {/* Clinician Survey Button */}
+              <a
+                href="https://forms.gle/qpxr9YVjVv5XBkAi6"
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center justify-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] py-3 rounded-xl shadow transition-colors"
+              >
+                CLINICIANS <span className="text-blue-500">↗</span>
+              </a>
+              
+              {/* Senior Survey Button */}
+              <a
+                href="https://forms.gle/3yijMVghFHrDpj7w6"
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center justify-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[10px] py-3 rounded-xl shadow transition-colors"
+              >
+                SENIORS <span className="text-blue-500">↗</span>
+              </a>
+            </div>
 
-          <div className="flex gap-2">
+            {/* Combined Compile & Copy Button */}
             <button
               type="button"
-              onClick={handleCompileMasterToken}
-              className="px-5 py-3 rounded-xl bg-emerald-700 text-white font-bold text-xs hover:bg-emerald-800 transition-all shadow-sm shrink-0"
+              onClick={() => {
+                const token = `[PILOT_BATCH|Count:${studyBatchLogs.length}] { ${studyBatchLogs.map((r, i) => 
+                  `P${i+1}:${r.pill_name}(${r.ndc})|Conf:${r.confidence}%|Rot:${r.rotations}|Adj:${r.adjustments}|Lat:${r.latency_sec}s`
+                ).join(" // ")} }`;
+                
+                navigator.clipboard.writeText(token).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                });
+              }}
+              className={`w-full py-4 rounded-xl text-xs font-bold transition-all border shadow-sm ${
+                copied ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-emerald-700 border-emerald-700 hover:bg-emerald-50"
+              }`}
             >
-              🛠️ Generate Master Study Token
+              {copied ? "COPIED TO CLIPBOARD!" : "REFRESH & COPY MASTER TOKEN"}
             </button>
-            
-            {generatedToken && (
-              <button
-                type="button"
-                onClick={handleCopyClipboard}
-                className={`flex-1 py-3 px-4 rounded-xl text-xs font-bold transition-all border shadow-sm flex items-center justify-center gap-1 ${
-                  copied ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
-                }`}
-              >
-                {copied ? "✓ Copied to Clipboard!" : "📋 Copy Token Text"}
-              </button>
-            )}
-          </div>
-
-          {/* Survey Buttons & Action Feedback */}
-          {generatedToken && (
-            <div className="space-y-4 animate-fadeIn">
-              <div className="grid grid-cols-2 gap-2">
-                <a
-                  href="https://forms.gle/qpxr9YVjVv5XBkAi6"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center justify-center gap-1 bg-amber-500 hover:bg-amber-600 text-white font-bold text-[10px] py-3 rounded-xl shadow transition-colors"
-                >
-                  CLINICIANS <span className="text-blue-500">↗</span>
-                </a>
-                <a
-                  href="https://forms.gle/3yijMVghFHrDpj7w6"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center justify-center gap-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[10px] py-3 rounded-xl shadow transition-colors"
-                >
-                  SENIORS <span className="text-blue-500">↗</span>
-                </a>
-              </div>
-              
-              {/* Only the Copy Button remains for final confirmation */}
-              <button
-                type="button"
-                onClick={handleCopyClipboard}
-                className={`w-full py-3 rounded-xl text-xs font-bold transition-all border shadow-sm ${
-                  copied ? "bg-emerald-600 text-white border-emerald-600" : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
-                }`}
-              >
-                {copied ? "COPIED!" : "COPY MASTER TOKEN TO CLIPBOARD"}
-              </button>
-            </div>
-          )}
-        </section>
-      )}
+          </section>
+        )}
 
     </div>
   );
