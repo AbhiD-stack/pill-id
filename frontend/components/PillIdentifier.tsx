@@ -377,15 +377,20 @@ function ResultsPyramid({ results, showAll, setShowAll }: { results: PredictionR
   const displayResults = showAll ? results : results.slice(0, 5);
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       {displayResults.map((r, i) => (
-        <div key={i} className="flex items-center gap-3 rounded-xl border border-sky-100 bg-white p-3 shadow-sm">
-          <span className="w-6 font-mono text-[10px] text-slate-400">#{i + 1}</span>
-          <div className="flex-1 truncate font-bold text-slate-800 text-sm">{r.name || r.ndc}</div>
-          <div className="h-1.5 w-16 rounded-full bg-slate-100">
-            <div className="h-full bg-sky-600" style={{ width: `${r.score_pct}%` }} />
+        <div key={i} className="flex gap-3 rounded-2xl border bg-white p-3 border-sky-100 shadow-sm">
+          {r.reference_image_url && <img src={r.reference_image_url} alt="" className="h-14 w-14 rounded-xl object-contain shrink-0 border" />}
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-bold text-slate-800 capitalize text-sm">{r.name || r.ndc}</p>
+            <p className="font-mono text-[10px] text-slate-400">NDC {r.ndc}</p>
+            <div className="mt-1 flex items-center gap-2">
+              <div className="h-1 flex-1 rounded-full bg-slate-100">
+                <div className="h-full bg-sky-600" style={{ width: `${r.score_pct}%` }} />
+              </div>
+              <span className="w-8 shrink-0 text-right text-[11px] font-semibold text-slate-500">{r.score_pct}%</span>
+            </div>
           </div>
-          <span className="w-8 text-right text-[11px] font-semibold text-slate-500">{r.score_pct}%</span>
         </div>
       ))}
       <button onClick={() => setShowAll(!showAll)} className="text-xs font-bold text-sky-600 underline">
