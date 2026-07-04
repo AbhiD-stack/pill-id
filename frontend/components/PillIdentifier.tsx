@@ -289,11 +289,17 @@ function ResultsPyramid({ results }: { results: PredictionResult[] }) {
       )}
 
       {/* ── Render Row 4 conditionally when button is activated ── */}
-      {showExtended && row4.length > 0 && (
+      {showExtended && (
         <div className="grid grid-cols-2 gap-3 pt-1 animate-fadeIn">
-          {row4.map((r, i) => (
-            <ResultCard key={`${r.ndc}-${i}`} r={r} rank={i + 6} size="sm" />
-          ))}
+          {row4.length > 0 ? (
+            row4.map((r, i) => (
+              <ResultCard key={`${r.ndc || i}-${i}`} r={r} rank={i + 6} size="sm" />
+            ))
+          ) : (
+            <div className="col-span-2 rounded-xl bg-slate-50 p-4 text-center text-xs text-slate-400 border border-dashed border-slate-200">
+              The backend model inference limit is currently capped at 5 results.
+            </div>
+          )}
         </div>
       )}
 
