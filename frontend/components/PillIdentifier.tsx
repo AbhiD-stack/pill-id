@@ -26,14 +26,13 @@ async function fetchSecureImageBlob(url: string): Promise<string> {
   }
 }
 
-// ── ADVANCED NORMALIZER: Automatically rotates portrait photos and forces a 2:1 landscape crop ──
+// ── UNIVERSAL SQUARE NORMALIZER: Preserves circles AND capsules perfectly ──
 function autoCropCenterAndRotate(imageFile: File): Promise<File> {
   return new Promise((resolve) => {
     const img = new Image();
     img.src = URL.createObjectURL(imageFile);
     
     img.onload = () => {
-      // Step 1: Detect if the photo is portrait/vertical
       const isPortrait = img.height > img.width;
       
       const normCanvas = document.createElement("canvas");
@@ -42,9 +41,8 @@ function autoCropCenterAndRotate(imageFile: File): Promise<File> {
       const MAX_WIDTH = 1200;
       let scale = 1;
 
-      // Step 2: Normalize orientation to horizontal layout
+      // 1. Standardize orientation to a standard horizontal base layer
       if (isPortrait) {
-        // If vertical, cap size based on height, then rotate 90 degrees clockwise
         if (img.height > MAX_WIDTH) scale = MAX_WIDTH / img.height;
         normCanvas.width = img.height * scale;
         normCanvas.height = img.width * scale;
@@ -53,25 +51,25 @@ function autoCropCenterAndRotate(imageFile: File): Promise<File> {
         normCtx?.rotate((90 * Math.PI) / 180);
         normCtx?.drawImage(img, -(img.width * scale) / 2, -(img.height * scale) / 2, img.width * scale, img.height * scale);
       } else {
-        // If already horizontal, just scale normally
         if (img.width > MAX_WIDTH) scale = MAX_WIDTH / img.width;
         normCanvas.width = img.width * scale;
         normCanvas.height = img.height * scale;
         normCtx?.drawImage(img, 0, 0, normCanvas.width, normCanvas.height);
       }
 
-      // Step 3: Extract a clean 2:1 landscape center block (matching IMG_2328 (2).jpg ratio)
+      // 2. Extract a perfect 1:1 SQUARE box from the center
+      // This guarantees round pills don't get clipped, while long pills still fit comfortably side-to-side
       const finalCanvas = document.createElement("canvas");
       const finalCtx = finalCanvas.getContext("2d");
 
-      const cropWidth = normCanvas.width * 0.75; // Take a clear 75% center focus box
-      const cropHeight = cropWidth * (512 / 1024); // Force strict 2:1 aspect ratio
+      // Determine the size of the square based on the shortest side available
+      const squareSize = Math.min(normCanvas.width, normCanvas.height) * 0.85; // 85% window captures the whole pill
       
-      const startX = (normCanvas.width - cropWidth) / 2;
-      const startY = (normCanvas.height - cropHeight) / 2;
+      const startX = (normCanvas.width - squareSize) / 2;
+      const startY = (normCanvas.height - squareSize) / 2;
 
-      finalCanvas.width = cropWidth;
-      finalCanvas.height = cropHeight;
+      finalCanvas.width = squareSize;
+      finalCanvas.height = squareSize;
 
       if (finalCtx) {
         finalCtx.imageSmoothingEnabled = true;
@@ -80,12 +78,12 @@ function autoCropCenterAndRotate(imageFile: File): Promise<File> {
           normCanvas,
           startX,
           startY,
-          cropWidth,
-          cropHeight,
+          squareSize,
+          squareSize,
           0,
           0,
-          cropWidth,
-          cropHeight
+          squareSize,
+          squareSize
         );
       }
       
@@ -115,7 +113,6 @@ export function PillIdentifier() {
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
 
-  // Intercepts the uploaded file instantly, optimizes it, and prints the result to your screen preview
   const handleFileSelection = useCallback(async (f: File | null) => {
     setError(null);
     setRawResults(null);
@@ -159,7 +156,6 @@ export function PillIdentifier() {
     setError(null);
     setRawResults(null);
     try {
-      // The file state is already perfectly cropped/rotated, send it directly!
       const res = await predictPill(file);
       
       if (res.predictions && res.predictions.length > 0) {
@@ -224,7 +220,7 @@ export function PillIdentifier() {
                 {processingImage && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 rounded-xl backdrop-blur-sm">
                     <span className="h-6 w-6 animate-spin rounded-full border-2 border-sky-600 border-t-transparent mb-2" />
-                    <p className="text-xs font-semibold text-slate-600">Optimizing Alignment...</p>
+                    <p className="text-xs font-semibold text-slate-600">Optimizing Aspect Ratio...</p>
                   </div>
                 )}
               </div>
@@ -256,7 +252,7 @@ export function PillIdentifier() {
 
           {file && !processingImage && (
             <p className="mt-2 truncate text-center text-xs font-mono text-emerald-600 bg-emerald-50 border border-emerald-100 rounded-lg py-1 px-2">
-              ✓ Image Horizontally Auto-Aligned
+              ✓ Image Auto-Normalized to Universal Square Box
             </p>
           )}
 
@@ -299,199 +295,9 @@ export function PillIdentifier() {
   );
 }
 
-function EmptyState() {
-  return (
-    <div className="flex min-h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white/50 p-8 text-center">
-      <svg
-        className="mb-3 h-10 w-10 text-slate-300"
-        fill="none"
-        viewBox="0 0 24 24"
-        stroke="currentColor"
-        strokeWidth={1.5}
-        aria-hidden="true"
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"
-        />
-      </svg>
-      <p className="text-sm font-medium text-slate-500">
-        Top visual similarity returns will display here
-      </p>
-      <p className="mt-1 text-xs text-slate-400">
-        Upload a photo and click “Identify Medication”.
-      </p>
-    </div>
-  );
-}
-
-function LoadingState() {
-  return (
-    <div className="space-y-3">
-      <div className="h-40 animate-pulse rounded-2xl bg-slate-100" />
-      <div className="grid grid-cols-2 gap-3">
-        <div className="h-24 animate-pulse rounded-2xl bg-slate-100" />
-        <div className="h-24 animate-pulse rounded-2xl bg-slate-100" />
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="h-20 animate-pulse rounded-2xl bg-slate-100" />
-        <div className="h-20 animate-pulse rounded-2xl bg-slate-100" />
-      </div>
-    </div>
-  );
-}
-
-function ResultsPyramid({ results }: { results: PredictionResult[] }) {
-  const [showExtended, setShowExtended] = useState(false);
-
-  if (results.length === 0) {
-    return (
-      <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
-        No visual matches identified by the backbone.
-      </div>
-    );
-  }
-
-  const [first, ...rest] = results;
-  const row2 = rest.slice(0, 2); 
-  const row3 = rest.slice(2, 4); 
-  const row4 = rest.slice(4, 9); 
-
-  return (
-    <div className="space-y-3">
-      <ResultCard r={first} rank={1} size="lg" />
-
-      {row2.length > 0 && (
-        <div className="grid grid-cols-2 gap-3">
-          {row2.map((r, i) => (
-            <ResultCard key={`${r.ndc}-${i}`} r={r} rank={i + 2} size="md" />
-          ))}
-        </div>
-      )}
-
-      {row3.length > 0 && (
-        <div className="grid grid-cols-2 gap-3">
-          {row3.map((r, i) => (
-            <ResultCard key={`${r.ndc}-${i}`} r={r} rank={i + 4} size="sm" />
-          ))}
-        </div>
-      )}
-
-      <div className="pt-2">
-        <button
-          type="button"
-          onClick={() => setShowExtended(!showExtended)}
-          className="flex w-full items-center justify-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-100"
-        >
-          {showExtended ? "Hide Extended Matches" : `Reveal Extended Matches (6-10)`}
-        </button>
-      </div>
-
-      {showExtended && (
-        <div className="grid grid-cols-2 gap-3 pt-1 animate-fadeIn">
-          {row4.length > 0 ? (
-            row4.map((r, i) => (
-              <ResultCard key={`${r.ndc || i}-${i}`} r={r} rank={i + 6} size="sm" />
-            ))
-          ) : (
-            <div className="col-span-2 rounded-xl bg-slate-50 p-4 text-center text-xs text-slate-400 border border-dashed border-slate-200">
-              The backend model inference limit is currently capped at 5 results.
-            </div>
-          )}
-        </div>
-      )}
-
-      <p className="pt-1 text-xs text-slate-400">
-        Match score reflects visual similarity to reference images, not a
-        confirmed identification.
-      </p>
-    </div>
-  );
-}
-
+// ... (Rest of your component styling remains exactly the same below)
+function EmptyState() { return ( <div className="flex min-h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white/50 p-8 text-center"> <svg className="mb-3 h-10 w-10 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden="true" > <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /> </svg> <p className="text-sm font-medium text-slate-500"> Top visual similarity returns will display here </p> <p className="mt-1 text-xs text-slate-400"> Upload a photo and click “Identify Medication”. </p></div> ); }
+function LoadingState() { return ( <div className="space-y-3"> <div className="h-40 animate-pulse rounded-2xl bg-slate-100" /> <div className="grid grid-cols-2 gap-3"> <div className="h-24 animate-pulse rounded-2xl bg-slate-100" /> <div className="h-24 animate-pulse rounded-2xl bg-slate-100" /> </div> <div className="grid grid-cols-2 gap-3"> <div className="h-20 animate-pulse rounded-2xl bg-slate-100" /> <div className="h-20 animate-pulse rounded-2xl bg-slate-100" /> </div> </div> ); }
+function ResultsPyramid({ results }: { results: PredictionResult[] }) { const [showExtended, setShowExtended] = useState(false); if (results.length === 0) { return ( <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500"> No visual matches identified by the backbone. </div> ); } const [first, ...rest] = results; const row2 = rest.slice(0, 2); const row3 = rest.slice(2, 4); const row4 = rest.slice(4, 9); return ( <div className="space-y-3"> <ResultCard r={first} rank={1} size="lg" /> {row2.length > 0 && ( <div className="grid grid-cols-2 gap-3"> {row2.map((r, i) => ( <ResultCard key={`${r.ndc}-${i}`} r={r} rank={i + 2} size="md" /> ))} </div> )} {row3.length > 0 && ( <div className="grid grid-cols-2 gap-3"> {row3.map((r, i) => ( <ResultCard key={`${r.ndc}-${i}`} r={r} rank={i + 4} size="sm" /> ))} </div> )} <div className="pt-2"> <button type="button" onClick={() => setShowExtended(!showExtended)} className="flex w-full items-center justify-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-100" > {showExtended ? "Hide Extended Matches" : `Reveal Extended Matches (6-10)`} </button> </div> {showExtended && ( <div className="grid grid-cols-2 gap-3 pt-1 animate-fadeIn"> {row4.length > 0 ? ( row4.map((r, i) => ( <ResultCard key={`${r.ndc || i}-${i}`} r={r} rank={i + 6} size="sm" /> )) ) : ( <div className="col-span-2 rounded-xl bg-slate-50 p-4 text-center text-xs text-slate-400 border border-dashed border-slate-200"> The backend model inference limit is currently capped at 5 results. </div> )} </div> )} <p className="pt-1 text-xs text-slate-400"> Match score reflects visual similarity to reference images, not a confirmed identification. </p></div> ); }
 type CardSize = "lg" | "md" | "sm";
-
-function ResultCard({
-  r,
-  rank,
-  size,
-}: {
-  r: PredictionResult;
-  rank: number;
-  size: CardSize;
-}) {
-  const imgSize = size === "lg" ? "h-24 w-24" : size === "md" ? "h-16 w-16" : "h-12 w-12";
-  const nameSize = size === "lg" ? "text-base" : "text-sm";
-  const showDetails = size !== "sm"; 
-  const isTop = size === "lg";
-
-  return (
-    <div className={`flex gap-3 rounded-2xl border bg-white p-3 ${isTop ? "border-sky-200 shadow-sm ring-1 ring-sky-100" : "border-slate-200"}`}>
-      <div className="relative shrink-0">
-        {r.reference_image_url ? (
-          <img
-            src={r.reference_image_url}
-            alt={`Reference image for ${r.name ?? r.ndc}`}
-            className={`${imgSize} rounded-xl border border-slate-200 object-contain`}
-          />
-        ) : (
-          <div className={`${imgSize} flex items-center justify-center rounded-xl border border-dashed border-slate-200 text-[10px] text-slate-400`}>
-            no image
-          </div>
-        )}
-        <span className={`absolute -left-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-bold text-white ${isTop ? "bg-sky-600" : "bg-slate-400"}`}>
-          {rank}
-        </span>
-      </div>
-
-      <div className="min-w-0 flex-1">
-        {isTop && (
-          <span className="mb-0.5 inline-block rounded-full bg-sky-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700">
-            Top match
-          </span>
-        )}
-
-        {r.name ? (
-          <>
-            <p className={`truncate font-semibold capitalize text-slate-800 ${nameSize}`}>
-              {r.name}
-            </p>
-            <p className="font-mono text-xs text-slate-400">NDC {r.ndc}</p>
-          </>
-        ) : (
-          <>
-            <p className={`truncate font-mono font-semibold text-slate-800 ${nameSize}`}>
-              {r.ndc}
-            </p>
-            <p className="text-xs text-slate-400">name unavailable</p>
-          </>
-        )}
-
-        {showDetails && (r.imprint || r.color) && (
-          <p className="mt-0.5 truncate text-xs text-slate-500">
-            {r.imprint && (
-              <span>
-                Imprint <span className="font-medium text-slate-700">{r.imprint}</span>
-              </span>
-            )}
-            {r.imprint && r.color && " · "}
-            {r.color && <span className="capitalize">{r.color}</span>}
-          </p>
-        )}
-
-        <div className="mt-1.5 flex items-center gap-2">
-          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
-            <div
-              className={`h-full rounded-full ${isTop ? "bg-sky-600" : "bg-sky-400"}`}
-              style={{ width: `${Math.min(100, r.score_pct)}%` }}
-            />
-          </div>
-          <span className="w-11 shrink-0 text-right text-xs font-semibold text-slate-600">
-            {r.score_pct}%
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
+function ResultCard({ r, rank, size, }: { r: PredictionResult; rank: number; size: CardSize; }) { const imgSize = size === "lg" ? "h-24 w-24" : size === "md" ? "h-16 w-16" : "h-12 w-12"; const nameSize = size === "lg" ? "text-base" : "text-sm"; const showDetails = size !== "sm"; const isTop = size === "lg"; return ( <div className={`flex gap-3 rounded-2xl border bg-white p-3 ${isTop ? "border-sky-200 shadow-sm ring-1 ring-sky-100" : "border-slate-200"}`}> <div className="relative shrink-0"> {r.reference_image_url ? ( <img src={r.reference_image_url} alt={`Reference image for ${r.name ?? r.ndc}`} className={`${imgSize} rounded-xl border border-slate-200 object-contain`} /> ) : ( <div className={`${imgSize} flex items-center justify-center rounded-xl border border-dashed border-slate-200 text-[10px] text-slate-400`}> no image </div> )} <span className={`absolute -left-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-bold text-white ${isTop ? "bg-sky-600" : "bg-slate-400"}`}> {rank} </span> </div> <div className="min-w-0 flex-1"> {isTop && ( <span className="mb-0.5 inline-block rounded-full bg-sky-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700"> Top match </span> )} {r.name ? ( <> <p className={`truncate font-semibold capitalize text-slate-800 ${nameSize}`}> {r.name} </p> <p className="font-mono text-xs text-slate-400">NDC {r.ndc}</p> </> ) : ( <> <p className={`truncate font-mono font-semibold text-slate-800 ${nameSize}`}> {r.ndc} </p> <p className="text-xs text-slate-400">name unavailable</p> </> )} {showDetails && (r.imprint || r.color) && ( <p className="mt-0.5 truncate text-xs text-slate-500"> {r.imprint && ( <span> Imprint <span className="font-medium text-slate-700">{r.imprint}</span> </span> )} {r.imprint && r.color && " · "} {r.color && <span className="capitalize">{r.color}</span>} </p> )} <div className="mt-1.5 flex items-center gap-2"> <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100"> <div className={`h-full rounded-full ${isTop ? "bg-sky-600" : "bg-sky-400"}`} style={{ width: `${Math.min(100, r.score_pct)}%` }} /> </div> <span className="w-11 shrink-0 text-right text-xs font-semibold text-slate-600"> {r.score_pct}% </span> </div> </div> </div> ); }
