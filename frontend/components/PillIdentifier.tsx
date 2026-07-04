@@ -26,6 +26,43 @@ async function fetchSecureImageBlob(url: string): Promise<string> {
   }
 }
 
+// ── NEW HELPER: Automated, senior-friendly background center cropping ──
+function autoCropCenter(imageFile: File): Promise<File> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.src = URL.createObjectURL(imageFile);
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+
+      // Define a bounding crop area taking the center 60% (eliminates 40% of the surrounding border/leather noise)
+      const cropWidth = img.width * 0.6;
+      const cropHeight = img.height * 0.6;
+      const startX = (img.width - cropWidth) / 2;
+      const startY = (img.height - cropHeight) / 2;
+
+      canvas.width = cropWidth;
+      canvas.height = cropHeight;
+
+      // Slice out the center segment
+      ctx?.drawImage(img, startX, startY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+      
+      canvas.toBlob((blob) => {
+        if (blob) {
+          const croppedFile = new File([blob], imageFile.name, {
+            type: "image/jpeg",
+            lastModified: Date.now(),
+          });
+          resolve(croppedFile);
+        } else {
+          resolve(imageFile); // Safe fallback to original if blob synthesis drops
+        }
+      }, "image/jpeg", 0.95);
+    };
+    img.onerror = () => resolve(imageFile); // Fallback to original on error
+  });
+}
+
 export function PillIdentifier() {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -62,7 +99,11 @@ export function PillIdentifier() {
     setError(null);
     setRawResults(null);
     try {
-      const res = await predictPill(file);
+      // 1. Process and extract the optimized center section behind the scenes
+      const processedFile = await autoCropCenter(file);
+
+      // 2. Submit the cleaner file straight over your ngrok pipeline
+      const res = await predictPill(processedFile);
       
       if (res.predictions && res.predictions.length > 0) {
         // Intercept references and resolve safe mobile-friendly streams
@@ -85,7 +126,7 @@ export function PillIdentifier() {
     } finally {
       setLoading(false);
     }
-  }, [file]);
+  }, [file, loading]);
 
   // Clean direct passthrough of raw visual backbone embeddings
   const visibleResults = rawResults;
@@ -276,17 +317,15 @@ function ResultsPyramid({ results }: { results: PredictionResult[] }) {
       )}
 
       {/* ── Toggle Button for Extended Returns (6-10) ── */}
-      {true &&  (
-        <div className="pt-2">
-          <button
-            type="button"
-            onClick={() => setShowExtended(!showExtended)}
-            className="flex w-full items-center justify-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-100"
-          >
-            {showExtended ? "Hide Extended Matches" : `Reveal Extended Matches (6-10)`}
-          </button>
-        </div>
-      )}
+      <div className="pt-2">
+        <button
+          type="button"
+          onClick={() => setShowExtended(!showExtended)}
+          className="flex w-full items-center justify-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-100"
+        >
+          {showExtended ? "Hide Extended Matches" : `Reveal Extended Matches (6-10)`}
+        </button>
+      </div>
 
       {/* ── Render Row 4 conditionally when button is activated ── */}
       {showExtended && (
