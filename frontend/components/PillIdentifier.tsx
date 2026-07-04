@@ -286,9 +286,10 @@ export function PillIdentifier() {
         </section>
 
         {/* Step 2 Identification Returns Column */}
-        <section className="lg:col-span-3 space-y-4">
-          <div>
-            <h2 className="mb-2 text-sm font-bold text-slate-700">Step 2: Identification Results</h2>
+        {/* Update this part of your return block */}
+<section className="lg:col-span-3 space-y-6"> {/* Increased from space-y-4 to space-y-6 */}
+  <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm"> {/* Added background and padding to the whole section */}
+    <h2 className="mb-4 text-lg font-bold text-slate-800">Step 2: Identification Results</h2> {/* Increased text size */}
             {loading ? (
               <div className="h-24 animate-pulse rounded-2xl bg-slate-100" />
             ) : rawResults ? (
@@ -367,14 +368,16 @@ function ResultsPyramid({ results, showAll, setShowAll }: { results: PredictionR
   
   const displayResults = showAll ? results : results.slice(0, 5);
 
-  return (
-    <div className="space-y-3">
-      {displayResults.map((r, i) => (
-        <div key={i} className="flex gap-3 rounded-2xl border bg-white p-3 border-sky-100 shadow-sm">
-          {r.reference_image_url && <img src={r.reference_image_url} alt="" className="h-14 w-14 rounded-xl object-contain shrink-0 border" />}
-          <div className="min-w-0 flex-1">
-            <p className="truncate font-bold text-slate-800 capitalize text-sm">{r.name || r.ndc}</p>
-            <div className="flex gap-2 font-mono text-[10px] text-slate-500">
+  // Inside ResultsPyramid function
+return (
+  <div className="space-y-4"> {/* Increased from space-y-3 to space-y-4 */}
+    {displayResults.map((r, i) => (
+      <div key={i} className="flex gap-4 rounded-2xl border bg-white p-4 border-sky-100 shadow-md"> {/* Increased p-3 to p-4 and gap-3 to gap-4 */}
+        {r.reference_image_url && <img src={r.reference_image_url} alt="" className="h-20 w-20 rounded-xl object-contain shrink-0 border" />} {/* Increased size from h-14 w-14 to h-20 w-20 */}
+        <div className="min-w-0 flex-1 py-1"> {/* Added py-1 to align content better */}
+          <p className="truncate font-bold text-slate-800 capitalize text-base">{r.name || r.ndc}</p> {/* Increased text-sm to text-base */}
+          
+          <div className="flex gap-2 font-mono text-[10px] text-slate-500">
               <span>NDC: {r.ndc}</span>
               {r.imprint && <span>• Imprint: {r.imprint}</span>}
               {r.color && <span>• Color: {r.color}</span>}
