@@ -240,6 +240,8 @@ function LoadingState() {
 }
 
 function ResultsPyramid({ results }: { results: PredictionResult[] }) {
+  const [showExtended, setShowExtended] = useState(false);
+
   if (results.length === 0) {
     return (
       <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
@@ -251,6 +253,7 @@ function ResultsPyramid({ results }: { results: PredictionResult[] }) {
   const [first, ...rest] = results;
   const row2 = rest.slice(0, 2); 
   const row3 = rest.slice(2, 4); 
+  const row4 = rest.slice(4, 9); // Pulls matches 6 through 10
 
   return (
     <div className="space-y-3">
@@ -268,6 +271,28 @@ function ResultsPyramid({ results }: { results: PredictionResult[] }) {
         <div className="grid grid-cols-2 gap-3">
           {row3.map((r, i) => (
             <ResultCard key={`${r.ndc}-${i}`} r={r} rank={i + 4} size="sm" />
+          ))}
+        </div>
+      )}
+
+      {/* ── Toggle Button for Extended Returns (6-10) ── */}
+      {row4.length > 0 && (
+        <div className="pt-2">
+          <button
+            type="button"
+            onClick={() => setShowExtended(!showExtended)}
+            className="flex w-full items-center justify-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-100"
+          >
+            {showExtended ? "Hide Extended Matches" : `Reveal Extended Matches (6-10)`}
+          </button>
+        </div>
+      )}
+
+      {/* ── Render Row 4 conditionally when button is activated ── */}
+      {showExtended && row4.length > 0 && (
+        <div className="grid grid-cols-2 gap-3 pt-1 animate-fadeIn">
+          {row4.map((r, i) => (
+            <ResultCard key={`${r.ndc}-${i}`} r={r} rank={i + 6} size="sm" />
           ))}
         </div>
       )}
