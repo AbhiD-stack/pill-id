@@ -384,30 +384,54 @@ export function PillIdentifier() {
 }
 
 function ResultsPyramid({ results, showAll, setShowAll }: { results: PredictionResult[], showAll: boolean, setShowAll: (s: boolean) => void }) {
-  if (results.length === 0) return <div className="text-xs text-slate-400">Zero model returns matches.</div>;
-  
-  const displayResults = showAll ? results : results.slice(0, 5);
+  if (!results || results.length === 0) return <div className="text-xs text-slate-400">No results found.</div>;
+
+  const primary = results[0];
+  const secondary = results.slice(1, 3);
+  const tertiary = results.slice(3, 5);
 
   return (
-    <div className="space-y-3">
-      {displayResults.map((r, i) => (
-        <div key={i} className="flex gap-3 rounded-2xl border bg-white p-3 border-sky-100 shadow-sm">
-          {r.reference_image_url && <img src={r.reference_image_url} alt="" className="h-14 w-14 rounded-xl object-contain shrink-0 border" />}
-          <div className="min-w-0 flex-1">
-            <p className="truncate font-bold text-slate-800 capitalize text-sm">{r.name || r.ndc}</p>
-            <p className="font-mono text-[10px] text-slate-400">NDC {r.ndc}</p>
-            <div className="mt-1 flex items-center gap-2">
-              <div className="h-1 flex-1 rounded-full bg-slate-100">
-                <div className="h-full bg-sky-600" style={{ width: `${r.score_pct}%` }} />
-              </div>
-              <span className="w-8 shrink-0 text-right text-[11px] font-semibold text-slate-500">{r.score_pct}%</span>
-            </div>
+    <div className="space-y-4">
+      {/* Primary Result */}
+      <ResultCard result={primary} size="large" />
+
+      {/* Secondary Row */}
+      <div className="grid grid-cols-2 gap-3">
+        {secondary.map((r, i) => <ResultCard key={i} result={r} size="small" />)}
+      </div>
+
+      {/* Tertiary Row */}
+      <div className="grid grid-cols-2 gap-3">
+        {tertiary.map((r, i) => <ResultCard key={i} result={r} size="small" />)}
+      </div>
+    </div>
+  );
+}
+
+function ResultCard({ result, size }: { result: PredictionResult; size: "large" | "small" }) {
+  if (!result) return null;
+  const isLarge = size === "large";
+  
+  return (
+    <div className={`flex gap-3 rounded-2xl border bg-white p-3 border-sky-100 shadow-sm ${isLarge ? "items-center" : ""}`}>
+      {result.reference_image_url && (
+        <img 
+          src={result.reference_image_url} 
+          alt={result.name} 
+          className={`${isLarge ? "h-20 w-20" : "h-14 w-14"} rounded-xl object-contain shrink-0 border`} 
+        />
+      )}
+      <div className="min-w-0 flex-1">
+        <p className={`truncate font-bold text-slate-800 capitalize ${isLarge ? "text-base" : "text-sm"}`}>{result.name}</p>
+        <p className="font-mono text-[10px] text-slate-400">NDC {result.ndc}</p>
+        <p className="text-[10px] text-slate-500">Imprint: {result.imprint || "N/A"} | Color: {result.color || "N/A"}</p>
+        <div className="mt-1 flex items-center gap-2">
+          <div className="h-1 flex-1 rounded-full bg-slate-100">
+            <div className="h-full bg-sky-600" style={{ width: `${result.score_pct}%` }} />
           </div>
+          <span className="w-8 shrink-0 text-right text-[11px] font-semibold text-slate-500">{result.score_pct}%</span>
         </div>
-      ))}
-      <button onClick={() => setShowAll(!showAll)} className="text-xs font-bold text-sky-600 underline px-1">
-        {showAll ? "Show Top 5" : "Show 6-10 Results"}
-      </button>
+      </div>
     </div>
   );
 }
