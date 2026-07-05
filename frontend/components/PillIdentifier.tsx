@@ -122,55 +122,67 @@ export function PillIdentifier() {
     return new Promise((resolve) => {
       if (!imgRef.current || !completedCrop) return resolve(null);
       const image = imgRef.current;
+      
+      // Use a smaller canvas for mobile
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d");
       if (!ctx) return resolve(null);
 
       const scaleX = image.naturalWidth / image.width;
       const scaleY = image.naturalHeight / image.height;
-      const targetSize = 512;
       
-      canvas.width = targetSize;
-      canvas.height = targetSize;
-      ctx.imageSmoothingEnabled = true;
+      const MAX_DIMENSION = 600; // Even safer for mobile
+      const scaleFactor = Math.min(1, MAX_DIMENSION / Math.max(completedCrop.width * scaleX, completedCrop.height * scaleY));
 
-      ctx.translate(targetSize / 2, targetSize / 2);
+      canvas.width = completedCrop.width * scaleX * scaleFactor;
+      canvas.height = completedCrop.height * scaleY * scaleFactor;
+
+      ctx.save();
+      ctx.translate(canvas.width / 2, canvas.height / 2);
       ctx.rotate((rotation * Math.PI) / 180);
-
+      
       ctx.drawImage(
         image,
         completedCrop.x * scaleX,
         completedCrop.y * scaleY,
         completedCrop.width * scaleX,
         completedCrop.height * scaleY,
-        -targetSize / 2,
-        -targetSize / 2,
-        targetSize,
-        targetSize
+        -canvas.width / 2,
+        -canvas.height / 2,
+        canvas.width,
+        canvas.height
       );
+      ctx.restore();
 
       canvas.toBlob((blob) => {
         if (!blob) return resolve(null);
         resolve(new File([blob], "normalized.jpg", { type: "image/jpeg" }));
-      }, "image/jpeg", 0.95);
+      }, "image/jpeg", 0.9);
     });
   };
 
   const onIdentify = useCallback(async () => {
-    if (!imgRef.current || !completedCrop) return; // Add this check      clearInterval(timerRef.current);
-      
+    if (!imgRef.current || !completedCrop) {
+      setError("Please frame the pill in the crop area first.");
+      return;
+    }
+        
     setLoading(true);
     setError(null);
     setRawResults(null);
-    
+      
     try {
       const processedFile = await getCroppedFile();
-      if (!processedFile) throw new Error("Frame the medication correctly.");
+      if (!processedFile) throw new Error("Could not process image. Please try again.");
 
       const res = await predictPill(processedFile);
+      
       if (res.predictions && res.predictions.length > 0) {
+        // Create a copy of predictions to safely process URLs
+        const predictions = [...res.predictions];
+        
         const securePredictions = await Promise.all(
-          res.predictions.map(async (pred) => {
+          predictions.map(async (pred) => {
             if (pred.reference_image_url) {
               const fullUrl = referenceImageSrc(pred.reference_image_url);
               const safeBlobUrl = await fetchSecureImageBlob(fullUrl);
@@ -179,31 +191,30 @@ export function PillIdentifier() {
             return pred;
           })
         );
+        
         setRawResults(securePredictions);
 
-        // Commit single run data to the master batch tracking matrix array
-        // Update this block inside onIdentify:
         const topMatch = securePredictions[0];
         const newRun: TelemetryRun = {
-          pill_name: securePredictions.slice(0, 10).map(p => p.name).join("|"),
-          ndc: securePredictions.slice(0, 10).map(p => p.ndc).join("|"),
-          confidence: topMatch.score_pct, // Kept as primary confidence
+          pill_name: securePredictions.slice(0, 5).map(p => p.name).join("|"),
+          ndc: securePredictions.slice(0, 5).map(p => p.ndc).join("|"),
+          confidence: topMatch.score_pct,
           rotations: rotationCount,
           adjustments: cropAdjustmentCount,
           latency_sec: timeToInference
         };
+        
         setStudyBatchLogs((prev) => [...prev, newRun]);
-        setGeneratedToken(""); // Force calculation refresh on new entries
       } else {
         setRawResults([]);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Analysis error occurred.");
+      console.error("Identification Error:", e);
+      setError("Analysis failed. Try a smaller crop area.");
     } finally {
       setLoading(false);
     }
   }, [completedCrop, rotation, rotationCount, cropAdjustmentCount, timeToInference]);
-
   // Master Token Compilation Action Loop
   const handleCompileMasterToken = () => {
     if (studyBatchLogs.length === 0) return;
