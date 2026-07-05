@@ -178,7 +178,6 @@ export function PillIdentifier() {
       const res = await predictPill(processedFile);
       
       if (res.predictions && res.predictions.length > 0) {
-        // Create a copy of predictions to safely process URLs
         const predictions = [...res.predictions];
         
         const securePredictions = await Promise.all(
@@ -195,9 +194,17 @@ export function PillIdentifier() {
         setRawResults(securePredictions);
 
         const topMatch = securePredictions[0];
+        
+        // Captured top 10 matches with name-to-NDC fallback logic
         const newRun: TelemetryRun = {
-          pill_name: securePredictions.slice(0, 5).map(p => p.name).join("|"),
-          ndc: securePredictions.slice(0, 5).map(p => p.ndc).join("|"),
+          pill_name: securePredictions
+            .slice(0, 10)
+            .map(p => (p.name && p.name.trim() !== "" ? p.name : `NDC:${p.ndc}`))
+            .join("|"),
+          ndc: securePredictions
+            .slice(0, 10)
+            .map(p => p.ndc)
+            .join("|"),
           confidence: topMatch.score_pct,
           rotations: rotationCount,
           adjustments: cropAdjustmentCount,
@@ -215,7 +222,7 @@ export function PillIdentifier() {
       setLoading(false);
     }
   }, [completedCrop, rotation, rotationCount, cropAdjustmentCount, timeToInference]);
-  // Master Token Compilation Action Loop
+    // Master Token Compilation Action Loop
   const handleCompileMasterToken = () => {
     if (studyBatchLogs.length === 0) return;
     
@@ -384,11 +391,13 @@ export function PillIdentifier() {
 }
 
 function ResultsPyramid({ results, showAll, setShowAll }: { results: PredictionResult[], showAll: boolean, setShowAll: (s: boolean) => void }) {
-  if (!results || results.length === 0) return <div className="text-xs text-slate-400">No results found.</div>;
+  if (!results || results.length === 0) return <div className="text-xs text-slate-400">Zero model returns matches.</div>;
 
+  // The primary logic: Top 5 in the pyramid, 6-10 hidden unless toggled
   const primary = results[0];
   const secondary = results.slice(1, 3);
   const tertiary = results.slice(3, 5);
+  const additional = results.slice(5, 10);
 
   return (
     <div className="space-y-4">
@@ -404,6 +413,24 @@ function ResultsPyramid({ results, showAll, setShowAll }: { results: PredictionR
       <div className="grid grid-cols-2 gap-3">
         {tertiary.map((r, i) => <ResultCard key={i} result={r} size="small" />)}
       </div>
+
+      {/* Reveal Toggle for 6-10 */}
+      {results.length > 5 && (
+        <div className="pt-2">
+          <button 
+            onClick={() => setShowAll(!showAll)} 
+            className="text-xs font-bold text-sky-600 underline px-1"
+          >
+            {showAll ? "Hide Results 6-10" : "Show 6-10 Results"}
+          </button>
+          
+          {showAll && additional.length > 0 && (
+            <div className="mt-4 space-y-3">
+              {additional.map((r, i) => <ResultCard key={i} result={r} size="small" />)}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -412,17 +439,20 @@ function ResultCard({ result, size }: { result: PredictionResult; size: "large" 
   if (!result) return null;
   const isLarge = size === "large";
   
+  // Logic: Use name if available, fallback to NDC
+  const displayName = result.name && result.name.trim() !== "" ? result.name : `NDC: ${result.ndc}`;
+  
   return (
     <div className={`flex gap-3 rounded-2xl border bg-white p-3 border-sky-100 shadow-sm ${isLarge ? "items-center" : ""}`}>
       {result.reference_image_url && (
         <img 
           src={result.reference_image_url} 
-          alt={result.name} 
+          alt={displayName} 
           className={`${isLarge ? "h-20 w-20" : "h-14 w-14"} rounded-xl object-contain shrink-0 border`} 
         />
       )}
       <div className="min-w-0 flex-1">
-        <p className={`truncate font-bold text-slate-800 capitalize ${isLarge ? "text-base" : "text-sm"}`}>{result.name}</p>
+        <p className={`truncate font-bold text-slate-800 capitalize ${isLarge ? "text-base" : "text-sm"}`}>{displayName}</p>
         <p className="font-mono text-[10px] text-slate-400">NDC {result.ndc}</p>
         <p className="text-[10px] text-slate-500">Imprint: {result.imprint || "N/A"} | Color: {result.color || "N/A"}</p>
         <div className="mt-1 flex items-center gap-2">
