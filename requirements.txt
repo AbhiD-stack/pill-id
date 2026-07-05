@@ -1,6 +1,6 @@
-# Edit your requirements.txt:
-torch==2.12.1+cpu --index-url https://download.pytorch.org/whl/cpu
-torchvision==0.17.1+cpu --index-url https://download.pytorch.org/whl/cpu
+--find-links https://download.pytorch.org/whl/cpu
+torch
+torchvision
 transformers
 Pillow
 numpy
