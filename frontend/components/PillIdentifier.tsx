@@ -16,7 +16,7 @@ const GOOGLE_FORM_URL = "https://docs.google.com/forms/d/e/.../viewform";
 interface TelemetryRun {
   pill_name: string;
   ndc: string;
-  confidence: number;
+  confidence: string; // Changed to string to store 10 values
   rotations: number;
   adjustments: number;
   latency_sec: number;
@@ -197,15 +197,9 @@ export function PillIdentifier() {
         
         // Captured top 10 matches with name-to-NDC fallback logic
         const newRun: TelemetryRun = {
-          pill_name: securePredictions
-            .slice(0, 10)
-            .map(p => (p.name && p.name.trim() !== "" ? p.name : `NDC:${p.ndc}`))
-            .join("|"),
-          ndc: securePredictions
-            .slice(0, 10)
-            .map(p => p.ndc)
-            .join("|"),
-          confidence: topMatch.score_pct,
+          pill_name: securePredictions.slice(0, 10).map(p => (p.name && p.name.trim() !== "" ? p.name : `NDC:${p.ndc}`)).join("|"),
+          ndc: securePredictions.slice(0, 10).map(p => p.ndc).join("|"),
+          confidence: securePredictions.slice(0, 10).map(p => `${p.score_pct}%`).join("|"),
           rotations: rotationCount,
           adjustments: cropAdjustmentCount,
           latency_sec: timeToInference
@@ -259,8 +253,12 @@ export function PillIdentifier() {
         {/* Step 1 Workspace Column */}
         <section className="lg:col-span-2">
           <div className="lg:sticky lg:top-6">
-            <h2 className="mb-3 text-sm font-bold text-slate-700">Step 1: Put Pill Picture Here</h2>
-
+            <h2 className="mb-3 text-sm font-bold text-slate-700">Step 1: Frame the Medication</h2>
+            <p className="mb-4 text-[11px] text-slate-500 leading-relaxed bg-slate-100 p-3 rounded-lg">
+              <strong>Pro-Tip:</strong> Crop as tightly as possible around the pill to exclude background. 
+  For oblong pills, align them horizontally. If the pill is imprinted with text, orient it so 
+  the characters appear upright when you tilt your head to the right.
+            </p>
             {!imgSrc ? (
               <label
                 onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
@@ -344,7 +342,7 @@ export function PillIdentifier() {
               type="button"
               onClick={() => {
                 const token = `[PILOT_BATCH|Count:${studyBatchLogs.length}] { ${studyBatchLogs.map((r, i) => 
-                  `P${i+1}:${r.pill_name}(${r.ndc})|Conf:${r.confidence}%|Rot:${r.rotations}|Adj:${r.adjustments}|Lat:${r.latency_sec}s`
+                  `P${i+1}:${r.pill_name}(${r.ndc})|Conf:[${r.confidence}]|Rot:${r.rotations}|Adj:${r.adjustments}|Lat:${r.latency_sec}s`
                 ).join(" // ")} }`;
                 
                 navigator.clipboard.writeText(token).then(() => {
