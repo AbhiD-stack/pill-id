@@ -27,47 +27,7 @@ MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
 # Populated in the lifespan handler.
 state: dict = {"classifier": None, "ref_store": None, "drug_names": None}
 
-import { useState, useEffect } from 'react';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
-
-export default function App() {
-  const [isDown, setIsDown] = useState(false);
-
-  useEffect(() => {
-    const checkConnection = async () => {
-      try {
-        // We ping the /api/health endpoint
-        const response = await fetch(`${API_BASE_URL}/api/health`);
-        if (!response.ok) throw new Error();
-        setIsDown(false);
-      } catch (err) {
-        setIsDown(true);
-      }
-    };
-
-    // Run check immediately, then every 5 seconds
-    checkConnection();
-    const interval = setInterval(checkConnection, 5000);
-    return () => clearInterval(interval);
-  }, []);
-
-  if (isDown) {
-    return (
-      <div style={{ 
-        display: 'flex', flexDirection: 'column', alignItems: 'center', 
-        justifyContent: 'center', height: '100vh', backgroundColor: '#f8d7da', 
-        color: '#721c24', fontFamily: 'sans-serif' 
-      }}>
-        <h1>🛠️ System Maintenance</h1>
-        <p>The med-recognition server is currently offline.</p>
-        <p>Please wait for the researcher to restore the connection.</p>
-      </div>
-    );
-  }
-
-  return <div>{/* Your main Pill-ID app content here */}</div>;
-}
 
 
 @asynccontextmanager
