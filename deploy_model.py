@@ -101,7 +101,7 @@ class DinoV2PillClassifier:
         return F.normalize(projected_feat, dim=1)
 
     @torch.no_grad()
-    def predict_topk(self, image: Image.Image, k: int = 5) -> List[Tuple[str, float, str]]: # Updated return type hint
+    def predict_topk(self, image: Image.Image, k: int = 10) -> List[Tuple[str, float, str]]: # Updated return type hint
         query_emb = self._extract_and_project_features(image)
 
         # Compute cosine similarity with all reference embeddings
@@ -178,8 +178,8 @@ if __name__ == "__main__":
                 print(f"  Could not display test image locally: {display_e}. Please view {test_image_path} manually.")
 
             print(f"\nMaking a prediction on {test_image_path}:")
-            predictions = classifier.predict_topk(test_image, k=3)
-            print("Top 3 Predictions:")
+            predictions = classifier.predict_topk(test_image, k=10)
+            print("Top 10 Predictions:")
             for i, (label, score, ref_path) in enumerate(predictions):
                 print(f"  {i+1}. Label: {label}, Score: {score:.4f}, Ref Image Path: {ref_path}")
                 try:

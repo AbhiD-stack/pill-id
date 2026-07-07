@@ -125,7 +125,7 @@ class DinoV2PillClassifier:
         return F.normalize(emb, dim=1)
 
     @torch.no_grad()
-    def predict_topk(self, image: Image.Image, k: int = 5) -> List[Prediction]:
+    def predict_topk(self, image: Image.Image, k: int = 10) -> List[Prediction]:
         query_emb = self._embed(image)
         similarities = (query_emb @ self.ref_embeddings.T).squeeze(0)
 

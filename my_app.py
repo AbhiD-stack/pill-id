@@ -35,7 +35,7 @@ def run_my_application():
     try:
         input_image = Image.open(test_image_path).convert('RGB')
         print(f"\nMaking a prediction for image: {test_image_path}")
-        top_k_predictions = classifier.predict_topk(input_image, k=5)
+        top_k_predictions = classifier.predict_topk(input_image, k=10)
 
         print("Top 5 Predictions:")
         for label, score, ref_path in top_k_predictions:

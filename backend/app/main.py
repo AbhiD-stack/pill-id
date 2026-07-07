@@ -18,15 +18,56 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
 
-from .classifier import DinoV2PillClassifier
-from .config import get_settings
-from .drug_names import DrugNameLookup, ndc_from_ref_path
-from .reference_images import ReferenceImageStore, map_to_zip_path
-
+from classifier import DinoV2PillClassifier
+from config import get_settings
+from drug_names import DrugNameLookup, ndc_from_ref_path
+from reference_images import ReferenceImageStore, map_to_zip_path
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
 
 # Populated in the lifespan handler.
 state: dict = {"classifier": None, "ref_store": None, "drug_names": None}
+
+import { useState, useEffect } from 'react';
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
+
+export default function App() {
+  const [isDown, setIsDown] = useState(false);
+
+  useEffect(() => {
+    const checkConnection = async () => {
+      try {
+        // We ping the /api/health endpoint
+        const response = await fetch(`${API_BASE_URL}/api/health`);
+        if (!response.ok) throw new Error();
+        setIsDown(false);
+      } catch (err) {
+        setIsDown(true);
+      }
+    };
+
+    // Run check immediately, then every 5 seconds
+    checkConnection();
+    const interval = setInterval(checkConnection, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  if (isDown) {
+    return (
+      <div style={{ 
+        display: 'flex', flexDirection: 'column', alignItems: 'center', 
+        justifyContent: 'center', height: '100vh', backgroundColor: '#f8d7da', 
+        color: '#721c24', fontFamily: 'sans-serif' 
+      }}>
+        <h1>🛠️ System Maintenance</h1>
+        <p>The med-recognition server is currently offline.</p>
+        <p>Please wait for the researcher to restore the connection.</p>
+      </div>
+    );
+  }
+
+  return <div>{/* Your main Pill-ID app content here */}</div>;
+}
 
 
 @asynccontextmanager
@@ -136,3 +177,8 @@ def reference_image(path: str = Query(..., description="Zip member path under eP
         media_type=content_type,
         headers={"Cache-Control": "public, max-age=86400"},
     )
+
+if __name__ == "__main__":
+    import uvicorn
+    # Change it to this:
+    uvicorn.run(app, host="127.0.0.1", port=8000)

@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     device: str = "auto"
 
     # How many candidate matches to return per prediction.
-    top_k: int = 5
+    top_k: int = 10
 
     # Browser origins allowed to call the API (comma-separated in the env var).
     # Localhost for dev; add the Vercel URL when the frontend is deployed.

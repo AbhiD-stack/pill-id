@@ -130,7 +130,7 @@ class PillPredictionApp:
         self.root.update_idletasks()
 
         try:
-            predictions = self.classifier.predict_topk(self.current_image, k=5)
+            predictions = self.classifier.predict_topk(self.current_image, k=10)
             results_str = "Top 5 Predictions:\n"
             # Frame for reference images
             if hasattr(self, 'ref_images_frame'):
