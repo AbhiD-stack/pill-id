@@ -13,21 +13,40 @@ export type PredictionResult = {
 const apiBase = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
 
 export async function predictPill(file: File) {
+  // Without this, the fetch below falls back to a relative path and hits
+  // this app's own server instead of the backend — which comes back as an
+  // opaque 404/"Server action not found" response that's hard to diagnose.
+  // Fail fast with a message that points at the actual misconfiguration.
+  if (!apiBase) {
+    throw new Error(
+      "NEXT_PUBLIC_API_URL is not set, so this app has no backend to call. Set it (e.g. in Vercel Project Settings → Environment Variables) to your backend's URL — such as your Cloudflare Tunnel URL — and redeploy."
+    );
+  }
+
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await fetch(`${apiBase}/api/predict`, {
-    method: "POST",
-    body: formData,
-    headers: {
-      // This tells Ngrok to shut up and just serve the data instantly!
-      "ngrok-skip-browser-warning": "true",
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${apiBase}/api/predict`, {
+      method: "POST",
+      body: formData,
+      headers: {
+        // This tells Ngrok to shut up and just serve the data instantly!
+        "ngrok-skip-browser-warning": "true",
+      },
+    });
+  } catch {
+    throw new Error(`Could not reach the backend at ${apiBase}. Make sure it's running and reachable.`);
+  }
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Prediction request failed with status ${response.status}`);
+    // A misconfigured/stale apiBase can still 404 against the right host —
+    // that response can be an HTML error page, so avoid dumping raw HTML.
+    const looksLikeHtml = text.trim().startsWith("<");
+    const detail = !looksLikeHtml && text ? text : `HTTP ${response.status}`;
+    throw new Error(`Prediction request failed (calling ${apiBase}): ${detail}`);
   }
 
   return (await response.json()) as { predictions: PredictionResult[] };

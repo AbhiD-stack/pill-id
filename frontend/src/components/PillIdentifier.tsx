@@ -211,7 +211,7 @@ export function PillIdentifier() {
       }
     } catch (e) {
       console.error("Identification Error:", e);
-      setError("Analysis failed. Try a smaller crop area.");
+      setError(e instanceof Error ? e.message : "Analysis failed. Please try again.");
     } finally {
       setLoading(false);
     }
