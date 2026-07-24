@@ -31,7 +31,7 @@ warm in memory. The frontend is a thin client that can be hosted anywhere.
 |------|------|
 | `backend/` | FastAPI inference service (model, reference-image serving, drug-name lookup) |
 | `backend/app/data/ndc_names.json` | Precomputed NDC → drug name/imprint/color table (from NIH RxNav) |
-| `frontend/` | Next.js upload UI + results |
+| `frontend/` | Next.js app: landing page at `/`, original UI at `/v1`, new UI at `/v2` — both call the same backend |
 | `deploy/` | Docker Compose + Caddy (auto-HTTPS) + systemd for EC2 |
 | `dinov2_projection_head/`, `config.json` | Trained model artifacts |
 | `ePillID_data.zip` | Reference image dataset (Git LFS) |
@@ -56,17 +56,20 @@ On Apple Silicon it auto-selects the `mps` GPU; otherwise CPU (~1–3 s/image).
 ```bash
 cd frontend
 npm install
-cp .env.local.example .env.local   # NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+cp .env.local.example .env.local   # NEXT_PUBLIC_API_URL=http://localhost:8000
 npm run dev
 ```
 
-Open <http://localhost:3000>, upload a pill photo, click **Identify pill**.
+Open <http://localhost:3000> for the landing page, which links to **`/v1`**
+(original UI) and **`/v2`** (new UI). Both call the same backend via
+`NEXT_PUBLIC_API_URL`.
 
 ### Configuration
 
 - **Backend** (`backend/.env`, see `.env.example`): `DEVICE` (`auto`/`cpu`/`mps`/`cuda`),
   `TOP_K`, `CORS_ORIGINS`, `MODEL_ARTIFACTS_DIR`, `DATASET_ZIP_PATH`.
-- **Frontend** (`frontend/.env.local`): `NEXT_PUBLIC_API_BASE_URL`.
+- **Frontend** (`frontend/.env.local`): `NEXT_PUBLIC_API_URL` — the backend's base URL
+  (e.g. a Cloudflare Tunnel URL), shared by both `/v1` and `/v2`.
 
 ### Drug names
 
@@ -87,7 +90,8 @@ PYTHONPATH=. .venv/bin/python -u scripts/build_ndc_names.py   # resumable; rerun
 ### Frontend → Vercel
 
 Import the repo in Vercel, set **Root Directory = `frontend`**, and add env var
-`NEXT_PUBLIC_API_BASE_URL=https://api.your-domain.com` (your backend's HTTPS URL).
+`NEXT_PUBLIC_API_URL=https://api.your-domain.com` (your backend's HTTPS URL,
+e.g. a Cloudflare Tunnel URL).
 
 ### Backend → EC2 Spot
 

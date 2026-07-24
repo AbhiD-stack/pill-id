@@ -219,3 +219,8 @@ __marimo__/
 .DS_Store
 
 backend/node_modules/
+
+# The generic `lib/` rule above (Python packaging boilerplate) also matches
+# the Next.js frontend's lib directory — un-ignore it explicitly.
+!frontend/lib/
+!frontend/src/lib/

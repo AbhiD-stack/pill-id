@@ -1,0 +1,35 @@
+{
+  "_source_note": "SMALL STARTER SAMPLE. Replace with a compressed export of the ONCHigh high-priority drug-drug interaction dataset before your clinical audit day.",
+  "interactions": [
+    {
+      "drug_a": "warfarin",
+      "drug_b": "ibuprofen",
+      "severity": "high",
+      "description": "Increased bleeding risk (NSAID + anticoagulant)."
+    },
+    {
+      "drug_a": "lisinopril",
+      "drug_b": "spironolactone",
+      "severity": "high",
+      "description": "Risk of hyperkalemia (ACE inhibitor + potassium-sparing diuretic)."
+    },
+    {
+      "drug_a": "simvastatin",
+      "drug_b": "clarithromycin",
+      "severity": "high",
+      "description": "Increased risk of myopathy/rhabdomyolysis (CYP3A4 inhibition raises statin levels)."
+    },
+    {
+      "drug_a": "metformin",
+      "drug_b": "contrast_dye",
+      "severity": "moderate",
+      "description": "Risk of lactic acidosis around imaging with IV contrast; usually held periprocedurally."
+    },
+    {
+      "drug_a": "sertraline",
+      "drug_b": "tramadol",
+      "severity": "high",
+      "description": "Serotonin syndrome risk (SSRI + opioid with serotonergic activity)."
+    }
+  ]
+}
