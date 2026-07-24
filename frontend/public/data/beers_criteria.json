@@ -1,0 +1,45 @@
+{
+  "_source_note": "This is a SMALL STARTER SAMPLE for wiring the app together. Replace with the full AGS Beers Criteria \u00ae table before your physician-audit day. Do not distribute the full copyrighted table publicly without checking AGS licensing terms for your use case.",
+  "flagged_drugs": [
+    {
+      "drug_name": "diphenhydramine",
+      "aliases": ["benadryl"],
+      "category": "Anticholinergic / First-gen antihistamine",
+      "risk_level": "high",
+      "rationale": "High anticholinergic burden; confusion, dry mouth, constipation, falls risk in older adults.",
+      "recommendation": "Avoid. Consider second-generation antihistamine instead."
+    },
+    {
+      "drug_name": "alprazolam",
+      "aliases": ["xanax"],
+      "category": "Benzodiazepine",
+      "risk_level": "high",
+      "rationale": "Increased risk of cognitive impairment, delirium, falls, fractures, and motor vehicle accidents in older adults.",
+      "recommendation": "Avoid for insomnia, agitation, or anxiety except in specific situations (seizure disorders, REM sleep disorder, benzodiazepine withdrawal)."
+    },
+    {
+      "drug_name": "glyburide",
+      "aliases": ["glibenclamide"],
+      "category": "Sulfonylurea (long-acting)",
+      "risk_level": "moderate",
+      "rationale": "Prolonged hypoglycemia risk in older adults.",
+      "recommendation": "Avoid; prefer shorter-acting sulfonylureas if this class is needed."
+    },
+    {
+      "drug_name": "nifedipine",
+      "aliases": ["procardia", "immediate-release nifedipine"],
+      "category": "Calcium channel blocker (immediate release)",
+      "risk_level": "high",
+      "rationale": "Risk of hypotension and myocardial ischemia.",
+      "recommendation": "Avoid immediate-release formulation."
+    },
+    {
+      "drug_name": "ibuprofen",
+      "aliases": ["advil", "motrin"],
+      "category": "NSAID (chronic use)",
+      "risk_level": "moderate",
+      "rationale": "GI bleeding/peptic ulcer risk increases with age; renal risk with chronic scheduled use.",
+      "recommendation": "Avoid chronic scheduled use unless other alternatives are ineffective and a GI-protective agent is co-prescribed."
+    }
+  ]
+}

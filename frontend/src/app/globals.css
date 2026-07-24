@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+
+/* Geriatric-UX tokens used by the v2 schedule/passport/safety components
+   (tap targets, high-contrast risk colors, larger reading sizes). */
+@theme {
+  --color-bucket-morning: #f5a623;
+  --color-bucket-noon: #3b82f6;
+  --color-bucket-night: #4c1d95;
+  --color-danger: #dc2626;
+  --color-warn: #d97706;
+  --color-safe: #16a34a;
+
+  --spacing-tap: 5rem;
+
+  --text-senior: 1.5rem;
+  --text-senior--line-height: 2rem;
+  --text-senior-lg: 2rem;
+  --text-senior-lg--line-height: 2.5rem;
+  --text-senior-xl: 2.75rem;
+  --text-senior-xl--line-height: 3.25rem;
+}
+
+html, body {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Large, high-contrast focus rings for accessibility (low vision / tremor) */
+button:focus-visible, a:focus-visible {
+  outline: 4px solid #2563eb;
+  outline-offset: 2px;
+}

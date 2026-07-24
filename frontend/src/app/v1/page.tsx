@@ -1,7 +1,12 @@
+import type { Metadata } from "next";
 import { PillIdentifier } from "@/components/PillIdentifier";
 import { DisclaimerBanner, DisclaimerFooter } from "@/components/Disclaimer";
 
-export default function Home() {
+export const metadata: Metadata = {
+  title: "Pill ID — Version 1",
+};
+
+export default function V1Page() {
   return (
     <main className="mx-auto max-w-5xl px-4 py-8 sm:py-10">
       <header className="mb-6">
@@ -10,7 +15,7 @@ export default function Home() {
             <span aria-hidden="true">💊</span> Med Recognition App
           </h1>
           <span className="rounded-full bg-sky-100 px-2.5 py-0.5 text-xs font-semibold text-sky-700">
-            Pilot
+            Pilot · v1
           </span>
         </div>
         <p className="mt-1.5 max-w-2xl text-sm text-slate-500">
