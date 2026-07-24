@@ -69,3 +69,9 @@ export async function fullSafetyCheck(newDrug: string, existingDrugs: string[]) 
   ]);
   return { beers, interactions };
 }
+
+// Full reference table for the Safety tab's Beers Criteria browser.
+export async function listBeersCriteria(): Promise<BeersFlag[]> {
+  const { flagged_drugs } = await loadBeers();
+  return flagged_drugs;
+}

@@ -1,80 +1,88 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getSchedule, ScheduleEntry } from "@/lib/db";
 import { checkBeersCriteria, checkInteractions, BeersFlag, InteractionFlag } from "@/lib/safety";
 
+export type SafetyCheckItem = {
+  id: string;
+  drugName: string;
+};
+
 type Row = {
-  entry: ScheduleEntry;
+  item: SafetyCheckItem;
   beers: BeersFlag | null;
   interactions: InteractionFlag[];
 };
 
-export default function SafetyReport() {
+// Cross-checks the pills currently on the schedule against each other —
+// entirely in-memory, driven by props from MainApp's session state (no
+// IndexedDB / persistence).
+export default function SafetyReport({ items }: { items: SafetyCheckItem[] }) {
   const [rows, setRows] = useState<Row[] | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const schedule = await getSchedule();
-      const names = schedule.map((s) => s.drugName);
+      const names = items.map((s) => s.drugName);
       const built: Row[] = await Promise.all(
-        schedule.map(async (entry) => {
-          const others = names.filter((n) => n !== entry.drugName);
+        items.map(async (item) => {
+          const others = names.filter((n) => n !== item.drugName);
           const [beers, interactions] = await Promise.all([
-            checkBeersCriteria(entry.drugName),
-            checkInteractions(entry.drugName, others),
+            checkBeersCriteria(item.drugName),
+            checkInteractions(item.drugName, others),
           ]);
-          return { entry, beers, interactions };
+          return { item, beers, interactions };
         })
       );
-      setRows(built);
+      if (!cancelled) setRows(built);
     })();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [items]);
 
-  if (!rows) return <p className="p-4 text-senior text-center">Loading safety report...</p>;
+  if (items.length === 0) {
+    return (
+      <p className="p-6 text-center text-sm text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl bg-white">
+        Nothing scheduled yet — scan and schedule a pill first to see personalized safety flags.
+      </p>
+    );
+  }
+
+  if (!rows) return <p className="p-4 text-center text-sm text-slate-500">Checking scheduled medications...</p>;
 
   const flaggedCount = rows.filter((r) => r.beers || r.interactions.length > 0).length;
 
   return (
-    <div className="p-4 flex flex-col gap-4 max-w-md mx-auto">
-      <h1 className="text-senior-lg font-bold text-center">Safety Report</h1>
-      <p className="text-senior text-center text-slate-500">
+    <div className="flex flex-col gap-3">
+      <p className="text-sm text-slate-500 text-center">
         {rows.length} medication{rows.length === 1 ? "" : "s"} on schedule · {flaggedCount} flagged
       </p>
 
-      {rows.length === 0 && (
-        <p className="text-senior text-center text-slate-400">Nothing scheduled yet — scan and schedule a pill first.</p>
-      )}
-
       {rows.map((r) => (
         <div
-          key={r.entry.id}
-          className={`rounded-2xl border-4 p-4 ${
-            r.beers || r.interactions.length > 0 ? "border-danger bg-red-50" : "border-safe bg-green-50"
+          key={r.item.id}
+          className={`rounded-2xl border-2 p-4 shadow-sm ${
+            r.beers || r.interactions.length > 0 ? "border-red-300 bg-red-50" : "border-emerald-200 bg-emerald-50"
           }`}
         >
-          <p className="text-senior font-bold">{r.entry.drugName}</p>
+          <p className="font-bold text-slate-900">{r.item.drugName}</p>
           {r.beers && (
-            <p className="text-senior text-danger mt-2">
+            <p className="text-sm text-red-800 mt-2">
               Beers Criteria ({r.beers.risk_level}): {r.beers.rationale} {r.beers.recommendation}
             </p>
           )}
           {r.interactions.map((i, idx) => (
-            <p key={idx} className="text-senior text-danger mt-2">
-              Interaction with {i.drug_a === r.entry.drugName.toLowerCase() ? i.drug_b : i.drug_a} ({i.severity}):{" "}
-              {i.description}
+            <p key={idx} className="text-sm text-red-800 mt-2">
+              Interaction with {i.drug_a.toLowerCase() === r.item.drugName.toLowerCase() ? i.drug_b : i.drug_a} (
+              {i.severity}): {i.description}
             </p>
           ))}
           {!r.beers && r.interactions.length === 0 && (
-            <p className="text-senior text-safe mt-2">No flags found in local safety database.</p>
+            <p className="text-sm text-emerald-700 mt-2">No flags found in local safety database.</p>
           )}
         </div>
       ))}
-
-      <p className="text-xs text-slate-400 text-center mt-4">
-        This report uses a locally bundled, non-exhaustive sample of Beers Criteria® and ONCHigh interaction data.
-        It is a decision-support aid, not a substitute for clinical judgment.
-      </p>
     </div>
   );
 }

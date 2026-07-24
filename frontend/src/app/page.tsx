@@ -27,10 +27,10 @@ export default function Home() {
         >
           <div>
             <p className="text-xs font-bold uppercase tracking-wider text-sky-600">
-              Version 1
+              Original UI
             </p>
             <h2 className="mt-1 text-xl font-bold text-slate-900">
-              Original UI
+              Version 1
             </h2>
             <p className="mt-2 text-sm text-slate-500">
               The original crop-and-identify workflow.
@@ -47,10 +47,10 @@ export default function Home() {
         >
           <div>
             <p className="text-xs font-bold uppercase tracking-wider text-indigo-600">
-              Version 2
+              New UI
             </p>
             <h2 className="mt-1 text-xl font-bold text-slate-900">
-              New UI
+              Version 2
             </h2>
             <p className="mt-2 text-sm text-slate-500">
               Camera capture, scheduling, and safety-check tabs.

@@ -67,7 +67,7 @@ export function PillIdentifier() {
     const { width, height } = e.currentTarget;
     // Pilot Intentional Friction Constraint: Small baseline canvas area boundary
     const initialCrop = centerCrop(
-      makeAspectCrop({ unit: "%", width: 40, aspect: 1 }, width, height),
+      makeAspectCrop({ unit: "%", width: 40 }, 1, width, height),
       width,
       height
     );

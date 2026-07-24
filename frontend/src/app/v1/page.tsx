@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { PillIdentifier } from "@/components/PillIdentifier";
 import { DisclaimerBanner, DisclaimerFooter } from "@/components/Disclaimer";
 
@@ -10,6 +11,12 @@ export default function V1Page() {
   return (
     <main className="mx-auto max-w-5xl px-4 py-8 sm:py-10">
       <header className="mb-6">
+        <Link
+          href="/"
+          className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-900 transition"
+        >
+          ← Home
+        </Link>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
             <span aria-hidden="true">💊</span> Med Recognition App

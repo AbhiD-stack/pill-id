@@ -3,25 +3,57 @@
 
 import { useState } from "react";
 import { identifyPill, type PillMatch } from "@/lib/api";
-import { addLogEntry, addScheduleEntry, checkCompliance, getRecentDrugNames, TimeOfDay } from "@/lib/db";
 import { fullSafetyCheck } from "@/lib/safety";
 import { speak, vibrate } from "./AudioAlert";
 import { logTelemetry } from "@/lib/telemetry";
 import ImageCapture from "./ImageCapture";
 
+export type TimeOfDay = "morning" | "noon" | "night";
+
+export type IdentificationResult = {
+  drug_names: string[];
+  confidences: number[];
+  rotation: number;
+  adjustments: number;
+  latency_ms: number;
+};
+
+export type ScheduledPill = {
+  drug_name: string;
+  ndc: string | null;
+  score: number;
+  bucket: TimeOfDay;
+};
+
 type Stage = "capture" | "identifying" | "results";
 
-export default function Scanner() {
+interface ScannerProps {
+  // Drug names already on the schedule, used for the on-scan interaction
+  // check — kept in memory by the parent, no persistence.
+  existingDrugNames?: string[];
+  onIdentified?: (result: IdentificationResult) => void;
+  onScheduled?: (pill: ScheduledPill) => void;
+}
+
+export default function Scanner({ existingDrugNames = [], onIdentified, onScheduled }: ScannerProps) {
   const [stage, setStage] = useState<Stage>("capture");
   const [statusMsg, setStatusMsg] = useState("Analyzing pill features...");
+  const [error, setError] = useState<string | null>(null);
   const [matches, setMatches] = useState<PillMatch[] | null>(null);
   const [safetyNote, setSafetyNote] = useState<string | null>(null);
   const [scanTime, setScanTime] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
-  const handleImageReady = async (canvas: HTMLCanvasElement) => {
+  const handleImageReady = async (
+    canvas: HTMLCanvasElement,
+    _width: number,
+    _height: number,
+    rotation: number,
+    adjustments: number
+  ) => {
     setStage("identifying");
     setStatusMsg("Analyzing pill features...");
+    setError(null);
     setScanTime(null);
     setPreviewUrl(canvas.toDataURL());
 
@@ -36,12 +68,19 @@ export default function Scanner() {
       setMatches(results);
       setStage("results");
 
+      onIdentified?.({
+        drug_names: results.map((r) => r.drug_name || r.label),
+        confidences: results.map((r) => r.score),
+        rotation,
+        adjustments,
+        latency_ms: Math.round(latency),
+      });
+
       const top = results[0];
       if (top) {
         vibrate([100, 50, 100]);
 
-        const existing = await getRecentDrugNames(24 * 30);
-        const { beers, interactions } = await fullSafetyCheck(top.drug_name || top.label, existing);
+        const { beers, interactions } = await fullSafetyCheck(top.drug_name || top.label, existingDrugNames);
         if (beers) {
           setSafetyNote(`⚠ Beers Criteria flag (${beers.risk_level}): ${beers.rationale} ${beers.recommendation}`);
         } else if (interactions.length > 0) {
@@ -53,7 +92,11 @@ export default function Scanner() {
       }
     } catch (err) {
       console.error("Scan failed:", err);
-      setStatusMsg("Scan failed. Try again.");
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not reach the identification server. Check your connection and try again."
+      );
       setStage("capture");
     }
   };
@@ -63,23 +106,16 @@ export default function Scanner() {
     setSafetyNote(null);
     setScanTime(null);
     setPreviewUrl(null);
+    setError(null);
     setStage("capture");
   };
 
-  async function scheduleDrop(match: PillMatch, bucket: TimeOfDay) {
-    await addScheduleEntry({
-      drugName: match.drug_name || match.label,
-      ndc: match.ndc ?? undefined,
+  function scheduleDrop(match: PillMatch, bucket: TimeOfDay) {
+    onScheduled?.({
+      drug_name: match.drug_name || match.label,
+      ndc: match.ndc,
+      score: match.score,
       bucket,
-    });
-    const now = new Date();
-    const onSchedule = checkCompliance(now, bucket);
-    await addLogEntry({
-      drugName: match.drug_name || match.label,
-      ndc: match.ndc ?? undefined,
-      scannedAt: now.getTime(),
-      bucket,
-      onSchedule,
     });
     vibrate(250);
     resetScanner();
@@ -88,10 +124,15 @@ export default function Scanner() {
   return (
     <div>
       {stage === "capture" && (
-        <ImageCapture
-          onImageReady={(canvas) => handleImageReady(canvas)}
-          onCancel={() => setStage("capture")}
-        />
+        <div className="space-y-3">
+          {error && (
+            <div className="rounded-xl border-2 border-red-300 bg-red-50 p-4 text-sm text-red-800 shadow-sm">
+              <p className="font-bold">⚠ Scan failed</p>
+              <p className="mt-1">{error}</p>
+            </div>
+          )}
+          <ImageCapture onImageReady={handleImageReady} onCancel={() => setStage("capture")} />
+        </div>
       )}
 
       {stage === "identifying" && (
