@@ -19,6 +19,16 @@ const SLIDES = [
     body: "Save a photo of your own pill under a medication name. Later, this tab shows what that medication currently looks like on file — if a refill looks different, you'll see exactly what changed to ask your pharmacist about.",
   },
   {
+    emoji: "🛡️",
+    title: "Care",
+    body: "Add a scanned match to your morning/noon/night schedule, then check it against a local Beers Criteria and drug-interaction list — flags also show right after a scan.",
+  },
+  {
+    emoji: "🪪",
+    title: "Share",
+    body: "A QR code and PDF summary of your schedule to hand a doctor or pharmacist, plus an export tab for study surveys — no account, nothing uploaded.",
+  },
+  {
     emoji: "⚙️",
     title: "One more thing",
     body: "This app is an experimental pilot, not a substitute for a pharmacist or doctor — never take a pill based only on this app. Your photos and saved pills stay on this device only; nothing here is uploaded to any account.",

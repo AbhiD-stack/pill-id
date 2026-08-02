@@ -16,7 +16,12 @@ best-matching reference image.
 A third frontend UI, separate from `/v1` and `/v2` (same backend, own routes
 under `frontend/src/app/v3/` and `frontend/src/components/v3/`), focused on
 day-to-day usability rather than the pilot/research instrumentation in `/v1`
-and `/v2`. Three tabs:
+and `/v2`. Carries forward every v2 feature (schedule, Beers/interaction
+safety checks, QR passport, survey export) plus the additions below, grouped
+into five tabs instead of growing the nav 1:1 — v2's own shell (`MainApp.tsx`)
+never actually wired `Scheduler.tsx`/`SafetyReport.tsx`/`QRPassport.tsx` into
+its Schedule/Safety/Passport tabs (those showed hardcoded mock content
+instead); v3 is the first place they run against real data.
 
 - **Scan** — photo capture with real pinch-to-zoom + drag-to-pan (touch
   pointer events, not just a zoom slider) framed against a fixed crop guide,
@@ -35,6 +40,14 @@ and `/v2`. Three tabs:
   or persisted server-side, and there's no login. This app has no IRB review
   and isn't a HIPAA-covered entity's system — see the in-app Settings privacy
   note before pointing it at real patient data.
+- **Care** — Schedule (morning/noon/night, via `Scheduler.tsx`) and Safety
+  (Beers Criteria + drug-interaction flags against your schedule, via
+  `SafetyReport.tsx`) as two views in one tab. Each Scan result also gets
+  one-tap "add to schedule" buttons, and the top match is safety-checked
+  immediately after a scan.
+- **Share** — QR Health Passport (`QRPassport.tsx`, scan-off-the-screen +
+  PDF summary) and an Export view (per-session scan token + the clinician/
+  usability survey links) as two views in one tab.
 - **Settings** — default capture brightness, number of scan results (6–10),
   text size, pharmacist contact info (used to prefill the My Pills flag
   message), and a "replay tutorial" control for the first-run onboarding

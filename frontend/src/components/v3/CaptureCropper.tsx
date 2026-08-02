@@ -26,7 +26,7 @@ export default function CaptureCropper({
   helpText = "Pinch or use the +/- buttons to zoom, drag to reposition, then tap Use This Photo.",
   initialBrightness = 1.0,
 }: {
-  onCapture: (canvas: HTMLCanvasElement) => void;
+  onCapture: (canvas: HTMLCanvasElement, meta: { rotation: number; adjustments: number }) => void;
   onCancel?: () => void;
   title?: string;
   helpText?: string;
@@ -43,6 +43,12 @@ export default function CaptureCropper({
   const videoRef = useRef<HTMLVideoElement>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
 
+  // Counts distinct pinch/drag/zoom/rotate gestures during editing -- purely
+  // a UX metric surfaced in the Share tab's export token, mirroring v1/v2's
+  // rotation/adjustment telemetry. Never sent anywhere on its own.
+  const adjustmentCount = useRef(0);
+  const gestureMoved = useRef(false);
+
   const pointers = useRef<Map<number, Point>>(new Map());
   const lastDist = useRef<number | null>(null);
   const lastMid = useRef<Point | null>(null);
@@ -51,6 +57,8 @@ export default function CaptureCropper({
     setRotation(0);
     setScale(1);
     setOffset({ x: 0, y: 0 });
+    adjustmentCount.current = 0;
+    gestureMoved.current = false;
   };
 
   const loadImageFromDataUrl = (dataUrl: string) => {
@@ -165,18 +173,22 @@ export default function CaptureCropper({
       }
       lastDist.current = d;
       lastMid.current = m;
+      gestureMoved.current = true;
     } else if (pointers.current.size === 1) {
       const p = [...pointers.current.values()][0];
       if (lastMid.current) {
         setOffset((o) => ({ x: o.x + (p.x - lastMid.current!.x), y: o.y + (p.y - lastMid.current!.y) }));
       }
       lastMid.current = p;
+      gestureMoved.current = true;
     }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
     pointers.current.delete(e.pointerId);
     if (pointers.current.size === 0) {
+      if (gestureMoved.current) adjustmentCount.current += 1;
+      gestureMoved.current = false;
       lastDist.current = null;
       lastMid.current = null;
     } else if (pointers.current.size === 1) {
@@ -195,7 +207,7 @@ export default function CaptureCropper({
     cropped
       .getContext("2d")!
       .drawImage(full, guideOffset, guideOffset, GUIDE_SIZE, GUIDE_SIZE, 0, 0, GUIDE_SIZE, GUIDE_SIZE);
-    onCapture(cropped);
+    onCapture(cropped, { rotation, adjustments: adjustmentCount.current });
   };
 
   return (
@@ -279,7 +291,10 @@ export default function CaptureCropper({
             <div className="flex items-center gap-3">
               <span className="w-20 shrink-0 text-sm font-medium text-slate-700">Zoom</span>
               <button
-                onClick={() => setScale((s) => clamp(s - 0.15, 0.4, 5))}
+                onClick={() => {
+                  setScale((s) => clamp(s - 0.15, 0.4, 5));
+                  adjustmentCount.current += 1;
+                }}
                 className="h-9 w-9 rounded-lg bg-slate-100 font-bold text-slate-700 hover:bg-slate-200"
               >
                 −
@@ -290,11 +305,17 @@ export default function CaptureCropper({
                 max={5}
                 step={0.05}
                 value={scale}
-                onChange={(e) => setScale(parseFloat(e.target.value))}
+                onChange={(e) => {
+                  setScale(parseFloat(e.target.value));
+                  adjustmentCount.current += 1;
+                }}
                 className="flex-1"
               />
               <button
-                onClick={() => setScale((s) => clamp(s + 0.15, 0.4, 5))}
+                onClick={() => {
+                  setScale((s) => clamp(s + 0.15, 0.4, 5));
+                  adjustmentCount.current += 1;
+                }}
                 className="h-9 w-9 rounded-lg bg-slate-100 font-bold text-slate-700 hover:bg-slate-200"
               >
                 +
@@ -316,7 +337,10 @@ export default function CaptureCropper({
             </div>
 
             <button
-              onClick={() => setRotation((r) => (r + 90) % 360)}
+              onClick={() => {
+                setRotation((r) => (r + 90) % 360);
+                adjustmentCount.current += 1;
+              }}
               className="w-full rounded-lg bg-slate-100 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200"
             >
               Rotate 90°

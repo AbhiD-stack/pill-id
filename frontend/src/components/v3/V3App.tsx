@@ -3,16 +3,21 @@
 import { useEffect, useState } from "react";
 import ScanTab from "./ScanTab";
 import MyPillsTab from "./MyPillsTab";
+import CareTab from "./CareTab";
+import ShareTab from "./ShareTab";
 import SettingsTab from "./SettingsTab";
 import Onboarding from "./Onboarding";
 import { DisclaimerBanner } from "@/components/Disclaimer";
 import { getSettings, saveSettings, DEFAULT_SETTINGS, type V3Settings } from "@/lib/dbV3";
+import { useMasterToken } from "@/lib/masterToken";
 
-type Tab = "scan" | "mypills" | "settings";
+type Tab = "scan" | "mypills" | "care" | "share" | "settings";
 
 const TABS: { key: Tab; label: string; icon: string }[] = [
   { key: "scan", label: "Scan", icon: "📷" },
-  { key: "mypills", label: "My Pills", icon: "💊" },
+  { key: "mypills", label: "Pills", icon: "💊" },
+  { key: "care", label: "Care", icon: "🛡️" },
+  { key: "share", label: "Share", icon: "🪪" },
   { key: "settings", label: "Settings", icon: "⚙️" },
 ];
 
@@ -21,6 +26,7 @@ export default function V3App() {
   const [settings, setSettings] = useState<V3Settings>(DEFAULT_SETTINGS);
   const [ready, setReady] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const masterToken = useMasterToken();
 
   useEffect(() => {
     getSettings().then((s) => {
@@ -56,8 +62,10 @@ export default function V3App() {
       </div>
 
       <main className="flex-1 px-4 py-5">
-        {tab === "scan" && <ScanTab settings={settings} />}
+        {tab === "scan" && <ScanTab settings={settings} masterToken={masterToken} />}
         {tab === "mypills" && <MyPillsTab settings={settings} />}
+        {tab === "care" && <CareTab />}
+        {tab === "share" && <ShareTab masterToken={masterToken} />}
         {tab === "settings" && (
           <SettingsTab settings={settings} onChange={setSettings} onReplayTutorial={() => setShowOnboarding(true)} />
         )}
@@ -72,8 +80,8 @@ export default function V3App() {
               tab === t.key ? "font-semibold text-sky-600" : "text-slate-500"
             }`}
           >
-            <span className="text-xl">{t.icon}</span>
-            <span className="text-[11px]">{t.label}</span>
+            <span className="text-lg">{t.icon}</span>
+            <span className="text-[10px]">{t.label}</span>
           </button>
         ))}
       </nav>

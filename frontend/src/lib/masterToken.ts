@@ -70,3 +70,5 @@ export function useMasterToken() {
     addIdentification,
   };
 }
+
+export type MasterTokenApi = ReturnType<typeof useMasterToken>;
