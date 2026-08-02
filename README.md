@@ -11,6 +11,33 @@ best-matching reference image.
 > be wrong. Never rely on this tool to identify medication. Always confirm with a
 > pharmacist, physician, or official packaging.
 
+## Multi-database expansion (OTC pills, many manufacturers)
+
+`notebooks/Backup_New_phase_2_model_2_multi_database.ipynb` extends the
+retrieval gallery beyond the 4,902 ePillID classes with over-the-counter
+products harvested live from DailyMed (NIH/FDA's structured product labeling
+database), covering many different manufacturers of the same generic drug
+(e.g. store-brand vs. brand-name ibuprofen). Because inference here is
+nearest-neighbor retrieval rather than closed-set classification (the
+classifier/ArcFace sub-head is never used at inference — see
+`backend/app/classifier.py`), new classes can be added to the reference
+gallery without retraining. Run the "V3" section of that notebook in Colab
+(needs live internet access to `dailymed.nlm.nih.gov` + a GPU) to regenerate:
+
+- `dinov2_projection_head/best_projection_head.pt` (same weights, extended
+  `label_classes`)
+- `dinov2_projection_head/deployed_ref_embeddings.pt` (merged gallery)
+- `otc_reference_images.zip` (drop at the repo root, next to
+  `ePillID_data.zip`) — used by the second entry in `ReferenceImageStore`
+- `backend/app/data/ndc_names.json` (merged with DailyMed drug names)
+
+The backend supports the OTC zip out of the box (`OTC_DATASET_ZIP_PATH` in
+`.env`, see `.env.example`); it's optional — without it the app keeps serving
+ePillID-only thumbnails. Actual OTC accuracy (this repo targets 90%+ top-5 /
+near-100% top-10 on the combined gallery) can only be measured by running the
+notebook's evaluation cell (V3.8) yourself, since it depends on how many
+manufacturer photos DailyMed's API actually returns at harvest time.
+
 ## Architecture
 
 ```

@@ -37,7 +37,10 @@ async def lifespan(app: FastAPI):
     state["classifier"] = DinoV2PillClassifier(
         model_dir=settings.model_artifacts_dir, device=settings.device
     )
-    state["ref_store"] = ReferenceImageStore(settings.dataset_zip_path)
+    state["ref_store"] = ReferenceImageStore({
+        "ePillID_data": settings.dataset_zip_path,
+        "otc_data": settings.otc_dataset_zip_path,
+    })
     state["drug_names"] = DrugNameLookup()
     print("[startup] Ready.")
     yield
