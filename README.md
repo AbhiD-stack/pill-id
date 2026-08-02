@@ -11,6 +11,46 @@ best-matching reference image.
 > be wrong. Never rely on this tool to identify medication. Always confirm with a
 > pharmacist, physician, or official packaging.
 
+## Version 3 UI (`/v3`)
+
+A third frontend UI, separate from `/v1` and `/v2` (same backend, own routes
+under `frontend/src/app/v3/` and `frontend/src/components/v3/`), focused on
+day-to-day usability rather than the pilot/research instrumentation in `/v1`
+and `/v2`. Three tabs:
+
+- **Scan** — photo capture with real pinch-to-zoom + drag-to-pan (touch
+  pointer events, not just a zoom slider) framed against a fixed crop guide,
+  plus a brightness adjustment applied to the actual submitted image. Shows
+  6–10 matches (configurable in Settings). If the right pill isn't in the
+  results, an inline "Search by appearance" panel lets you filter by shape,
+  color, imprint, and score marks instead — a backup, not the primary flow.
+- **My Pills** — save a photo of your own pill under a medication name (found
+  either by typing the name or by photographing the bottle label, which is
+  OCR'd server-side via `POST /api/ocr-label` and matched against the same
+  drug-name catalog). Later, the tab re-fetches what that medication
+  currently looks like on file and flags any changed imprint/color/shape —
+  e.g. after a manufacturer or supplier change — with a one-tap message you
+  can copy to send a pharmacist. All of this (personal photos, settings) is
+  stored only in the browser's IndexedDB; nothing is uploaded to an account
+  or persisted server-side, and there's no login. This app has no IRB review
+  and isn't a HIPAA-covered entity's system — see the in-app Settings privacy
+  note before pointing it at real patient data.
+- **Settings** — default capture brightness, number of scan results (6–10),
+  text size, pharmacist contact info (used to prefill the My Pills flag
+  message), and a "replay tutorial" control for the first-run onboarding
+  overlay.
+
+New backend endpoints backing this (`backend/app/main.py`): `GET /api/search`
+(name lookup), `GET /api/search-by-attributes` (shape/color/imprint/score
+filter), `POST /api/ocr-label` (bottle-label OCR via `pytesseract` +
+`tesseract-ocr`, see `backend/app/ocr.py` and the Dockerfile). None of these
+persist an uploaded image; each request is processed in memory and discarded.
+`backend/app/catalog.py` builds the name/attribute index once at startup from
+the same reference-image labels + `ndc_names.json` the classifier already
+loads — no new data source. Shape/score-mark fields are best-effort (see the
+comment in `backend/scripts/build_ndc_names.py`); older `ndc_names.json`
+entries just won't match those two filters.
+
 ## Multi-database expansion (OTC pills, many manufacturers)
 
 `notebooks/Backup_New_phase_2_model_2_multi_database.ipynb` extends the
@@ -58,7 +98,7 @@ warm in memory. The frontend is a thin client that can be hosted anywhere.
 |------|------|
 | `backend/` | FastAPI inference service (model, reference-image serving, drug-name lookup) |
 | `backend/app/data/ndc_names.json` | Precomputed NDC → drug name/imprint/color table (from NIH RxNav) |
-| `frontend/` | Next.js app: landing page at `/`, original UI at `/v1`, new UI at `/v2` — both call the same backend |
+| `frontend/` | Next.js app: landing page at `/`, original UI at `/v1`, new UI at `/v2`, usability-focused UI at `/v3` — all call the same backend |
 | `deploy/` | Docker Compose + Caddy (auto-HTTPS) + systemd for EC2 |
 | `dinov2_projection_head/`, `config.json` | Trained model artifacts |
 | `ePillID_data.zip` | Reference image dataset (Git LFS) |

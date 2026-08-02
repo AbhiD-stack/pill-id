@@ -20,7 +20,7 @@ export default function Home() {
         </p>
       </header>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-3">
         <Link
           href="/v1"
           className="group flex flex-col justify-between rounded-2xl border-2 border-slate-200 bg-white p-6 shadow-sm transition-all hover:border-sky-500 hover:shadow-md"
@@ -58,6 +58,27 @@ export default function Home() {
           </div>
           <span className="mt-6 inline-flex items-center text-sm font-semibold text-indigo-600">
             Open Version 2 →
+          </span>
+        </Link>
+
+        <Link
+          href="/v3"
+          className="group flex flex-col justify-between rounded-2xl border-2 border-slate-200 bg-white p-6 shadow-sm transition-all hover:border-emerald-500 hover:shadow-md"
+        >
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider text-emerald-600">
+              Version 3
+            </p>
+            <h2 className="mt-1 text-xl font-bold text-slate-900">
+              My Pills + Search
+            </h2>
+            <p className="mt-2 text-sm text-slate-500">
+              Pinch-to-crop scanning, bottle-label OCR, appearance-change
+              tracking, and a shape/color/imprint backup search.
+            </p>
+          </div>
+          <span className="mt-6 inline-flex items-center text-sm font-semibold text-emerald-600">
+            Open Version 3 →
           </span>
         </Link>
       </div>
