@@ -56,7 +56,14 @@ instead); v3 is the first place they run against real data.
   (Beers Criteria + drug-interaction flags against your schedule, via
   `SafetyReport.tsx`) as two views in one tab. Each Scan result also gets
   one-tap "add to schedule" buttons, and the top match is safety-checked
-  immediately after a scan.
+  immediately after a scan. As an alternative to tapping, you can also drag
+  a result card straight onto a Morning/Noon/Night box (`DragToSchedule.tsx`,
+  Pointer Events–based so it works with mouse/touch/pen alike). The three
+  drop zones are intentionally large, high-contrast, and fixed in place —
+  per Fitts's Law, movement time to a target scales with distance and
+  shrinks with target size, which matters for a population with reduced
+  fine motor control. Each card also keeps its original tap buttons; drag
+  is additive, not a replacement.
 - **Share** — QR Health Passport (`QRPassport.tsx`, scan-off-the-screen +
   PDF summary) and an Export view (per-session scan token + the clinician/
   usability survey links) as two views in one tab.
@@ -112,6 +119,37 @@ disk actually contain the merged data.** Once they do, pill scanning, manual
 drug search, "add a medication" in My Pills, the appearance-filter backup,
 and bottle-label OCR all pick it up automatically, with no code changes.
 
+### Two harvest paths: per-item REST vs. bulk zip
+
+The V3 section has two alternative ways to pull OTC data from DailyMed,
+under the same "V3: MULTI-DATABASE EXPANSION" heading:
+
+- **Per-item REST (V3.0–V3.4, the default path)** calls DailyMed's
+  `/spls.json` API once per seed drug name and once per matching SPL, over
+  the network. It's the more conservative, tested path, but each request
+  is a real network round-trip plus DailyMed's own rate limiting, so even
+  at a generous time budget it realistically adds on the order of hundreds
+  of new OTC classes per run — not enough to meaningfully close gaps like
+  "this specific manufacturer's rosuvastatin wasn't recognized."
+- **Bulk zip (the "Optional: bulk-download path" cells, run instead of
+  V3.0–V3.4)** downloads DailyMed's full-release SPL archives
+  (`dm_spl_release_human_otc_part*.zip`) directly and parses the HL7 SPL
+  XML locally — no per-drug network round-trip — which is what makes
+  reaching tens of thousands of classes in a comparable time budget
+  plausible at all. **This path is experimental and has not been run
+  against live DailyMed data** (this sandbox's network policy blocks it,
+  same as the REST path). It includes a structural smoke test right after
+  extraction that prints the first few SPL folders' contents, so if
+  DailyMed's actual archive layout doesn't match what the parser expects,
+  that shows up immediately and loudly instead of silently producing zero
+  usable classes. If the smoke test's printed folder contents look
+  different from what `CELL_B3`'s parser expects (an XML file plus an
+  `images/`-style subfolder per SPL), stop and adjust the parser before
+  continuing — don't run the rest of the pipeline on an unverified
+  assumption. Either path feeds the same `qualifying_products` /
+  `media_by_setid` handoff into V3.5 onward, so nothing past this point
+  needs to change based on which one you use.
+
 ### Steps to actually do it
 
 1. **Run the notebook in Google Colab** (needs a GPU and live internet
@@ -119,10 +157,12 @@ and bottle-label OCR all pick it up automatically, with no code changes.
    both, so this step can't be done from here; it has to run in your own
    Colab). Run cells 0–13 first (the existing ePillID pipeline — this
    populates `head_aug`, `ref_feat_448`, `N_CLASSES`, `ref_df`, etc. that
-   the V3 cells depend on), then run the whole "V3: MULTI-DATABASE
-   EXPANSION" section (cells V3.0–V3.11) in order. Expect this to take a
-   while — it's making real HTTP requests to DailyMed for each seed drug
-   name, downloading images, and running CLIP + DINOv2 over all of them.
+   the V3 cells depend on), then run **either** the per-item REST cells
+   (V3.0–V3.4) **or** the bulk-zip cells (see above) — not both — followed
+   by the rest of the "V3: MULTI-DATABASE EXPANSION" section (V3.5–V3.11)
+   in order. Expect this to take a while either way — it's making real
+   HTTP requests or large downloads against DailyMed, then running CLIP +
+   DINOv2 over everything collected.
 2. **Check cell V3.8's printed accuracy** before trusting the result — it
    reports ePillID top-k (should be roughly unchanged, a regression check)
    and OTC top-k (the actual new-capability number) separately.
