@@ -127,7 +127,7 @@ export default function ScanTab({ settings, masterToken }: { settings: V3Setting
           <CaptureCropper
             onCapture={handleCapture}
             title="Scan a pill"
-            helpText="Pinch or use the +/- buttons to zoom, drag to center the pill in the frame, then tap Use This Photo."
+            helpText="Crop as tightly as possible around the pill to exclude background, rotate if needed, then tap Use This Photo."
             initialBrightness={settings.brightness}
           />
           {error && (

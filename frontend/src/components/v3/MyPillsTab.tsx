@@ -135,7 +135,7 @@ export default function MyPillsTab({ settings }: { settings: V3Settings }) {
                 </p>
                 <CaptureCropper
                   title="Photograph your pill"
-                  helpText="Pinch or use +/- to zoom, drag to center, then tap Use This Photo."
+                  helpText="Crop tightly around the pill, rotate if needed, then tap Use This Photo."
                   initialBrightness={settings.brightness}
                   onCapture={(canvas) => finishAdd(canvas.toDataURL("image/jpeg", 0.92))}
                 />

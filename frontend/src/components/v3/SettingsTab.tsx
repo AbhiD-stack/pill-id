@@ -35,7 +35,7 @@ export default function SettingsTab({
   return (
     <div className="mx-auto max-w-2xl space-y-5">
       <Section title="Camera">
-        <Field label="Default photo brightness" hint="Applied automatically when you start a new scan; you can still adjust it per-photo.">
+        <Field label="Default photo brightness" hint="Applied automatically to every photo you crop, useful in dim lighting. Change it here if matches keep coming back too dark or washed out.">
           <div className="flex items-center gap-3">
             <input
               type="range"

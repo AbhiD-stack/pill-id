@@ -23,12 +23,18 @@ never actually wired `Scheduler.tsx`/`SafetyReport.tsx`/`QRPassport.tsx` into
 its Schedule/Safety/Passport tabs (those showed hardcoded mock content
 instead); v3 is the first place they run against real data.
 
-- **Scan** — photo capture with real pinch-to-zoom + drag-to-pan (touch
-  pointer events, not just a zoom slider) framed against a fixed crop guide,
-  plus a brightness adjustment applied to the actual submitted image. Shows
-  6–10 matches (configurable in Settings). If the right pill isn't in the
-  results, an inline "Search by appearance" panel lets you filter by shape,
-  color, imprint, and score marks instead — a backup, not the primary flow.
+- **Scan** — a single "Take or Upload Photo" button (a plain file input with
+  no `capture` attribute, so mobile browsers show their native Camera/Photo
+  Library/Files picker) followed by the same crop-and-rotate flow as `/v1`
+  (`react-image-crop`'s draggable/resizable rectangle, no pinch/zoom). An
+  earlier version used a live camera preview plus pinch-to-zoom on a canvas
+  redrawn every pointer move, which crashed on some mobile browsers under
+  that load — replaced outright with `/v1`'s lighter, already-proven
+  mechanism rather than patched. A brightness default from Settings is
+  applied once at crop time, not live. Shows 6–10 matches (configurable in
+  Settings). If the right pill isn't in the results, an inline "Search by
+  appearance" panel lets you filter by shape, color, imprint, and score
+  marks instead — a backup, not the primary flow.
 - **My Pills** — save a photo of your own pill under a medication name (found
   either by typing the name or by photographing the bottle label, which is
   OCR'd server-side via `POST /api/ocr-label` and matched against the same
