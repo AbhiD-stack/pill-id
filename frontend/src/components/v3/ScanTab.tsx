@@ -18,6 +18,7 @@ import { vibrate } from "@/components/AudioAlert";
 import type { MasterTokenApi } from "@/lib/masterToken";
 import { FilterDropdown, COLOR_OPTIONS, SHAPE_OPTIONS, SCORE_OPTIONS } from "./FilterDropdown";
 import { DisclaimerBanner } from "@/components/Disclaimer";
+import { useDragToSchedule, ScheduleDropZones, DragGhost, type DragHandleProps } from "./DragToSchedule";
 
 type Stage = "capture" | "loading" | "results";
 
@@ -27,6 +28,7 @@ export default function ScanTab({ settings, masterToken }: { settings: V3Setting
   const [scannedPhoto, setScannedPhoto] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [savedLabels, setSavedLabels] = useState<Set<string>>(new Set());
+  const [scheduledLabels, setScheduledLabels] = useState<Record<string, TimeOfDay>>({});
   const [safety, setSafety] = useState<{ beers: BeersFlag | null; interactions: InteractionFlag[] } | null>(null);
 
   const handleCapture = async (canvas: HTMLCanvasElement, meta: { rotation: number; adjustments: number }) => {
@@ -110,6 +112,7 @@ export default function ScanTab({ settings, masterToken }: { settings: V3Setting
       bucket,
       onSchedule: checkCompliance(now, bucket),
     });
+    setScheduledLabels((prev) => ({ ...prev, [r.label]: bucket }));
     vibrate(250);
   };
 
@@ -118,12 +121,18 @@ export default function ScanTab({ settings, masterToken }: { settings: V3Setting
     setScannedPhoto("");
     setError(null);
     setSavedLabels(new Set());
+    setScheduledLabels({});
     setSafety(null);
     setStage("capture");
   };
 
+  const { zoneRefs, activeZone, drag, bindDragHandle } = useDragToSchedule<PredictionResult>((r, bucket) => {
+    handleAddToSchedule(r, bucket);
+  });
+
   return (
     <div className="mx-auto max-w-2xl space-y-5">
+      <DragGhost drag={drag} />
       <DisclaimerBanner />
 
       {stage === "capture" && (
@@ -208,6 +217,8 @@ export default function ScanTab({ settings, masterToken }: { settings: V3Setting
             </div>
           )}
 
+          <ScheduleDropZones zoneRefs={zoneRefs} activeZone={activeZone} />
+
           <div className="space-y-3">
             {results.map((r, i) => (
               <ResultCard
@@ -217,6 +228,8 @@ export default function ScanTab({ settings, masterToken }: { settings: V3Setting
                 saved={savedLabels.has(r.label)}
                 onSave={() => handleSaveToMyPills(r)}
                 onSchedule={(bucket) => handleAddToSchedule(r, bucket)}
+                scheduledBucket={scheduledLabels[r.label] ?? null}
+                dragHandleProps={bindDragHandle(r.name?.trim() || `NDC ${r.ndc ?? "unknown"}`, r)}
               />
             ))}
           </div>
@@ -234,14 +247,17 @@ function ResultCard({
   saved,
   onSave,
   onSchedule,
+  scheduledBucket,
+  dragHandleProps,
 }: {
   result: PredictionResult;
   rank: number;
   saved: boolean;
   onSave: () => void;
   onSchedule: (bucket: TimeOfDay) => void;
+  scheduledBucket: TimeOfDay | null;
+  dragHandleProps: DragHandleProps;
 }) {
-  const [scheduled, setScheduled] = useState<TimeOfDay | null>(null);
   const displayName = result.name?.trim() || `NDC ${result.ndc ?? "unknown"}`;
 
   return (
@@ -289,17 +305,27 @@ function ResultCard({
         </button>
       </div>
 
-      <div className="mt-2.5 flex items-center gap-1.5 border-t border-slate-100 pt-2.5">
-        <span className="text-[11px] font-medium text-slate-400">Add to schedule:</span>
+      {scheduledBucket ? (
+        <div className="mt-2.5 flex items-center justify-center gap-1.5 rounded-xl border-t border-slate-100 bg-emerald-50 py-2 text-sm font-semibold text-emerald-700">
+          ✓ Scheduled for {scheduledBucket}
+        </div>
+      ) : (
+        <div
+          {...dragHandleProps}
+          className="mt-2.5 flex min-h-tap touch-none cursor-grab select-none items-center justify-center gap-2 rounded-xl border-2 border-dashed border-sky-300 bg-sky-50 text-sm font-bold text-sky-700 active:cursor-grabbing active:bg-sky-100"
+        >
+          <span aria-hidden="true">⠿⠿</span> Hold and drag to a time of day
+        </div>
+      )}
+
+      <div className="mt-2 flex items-center justify-center gap-1.5 pt-1">
+        <span className="text-[11px] font-medium text-slate-400">or tap:</span>
         {(["morning", "noon", "night"] as TimeOfDay[]).map((bucket) => (
           <button
             key={bucket}
-            onClick={() => {
-              onSchedule(bucket);
-              setScheduled(bucket);
-            }}
+            onClick={() => onSchedule(bucket)}
             className={`rounded-md px-2 py-1 text-[11px] font-semibold capitalize transition ${
-              scheduled === bucket ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              scheduledBucket === bucket ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
             }`}
           >
             {bucket === "morning" ? "🌅" : bucket === "noon" ? "☀️" : "🌙"} {bucket}
