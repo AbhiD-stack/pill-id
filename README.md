@@ -89,26 +89,74 @@ shows an actionable message instead of the raw "Not Found" text.
 retrieval gallery beyond the 4,902 ePillID classes with over-the-counter
 products harvested live from DailyMed (NIH/FDA's structured product labeling
 database), covering many different manufacturers of the same generic drug
-(e.g. store-brand vs. brand-name ibuprofen). Because inference here is
-nearest-neighbor retrieval rather than closed-set classification (the
-classifier/ArcFace sub-head is never used at inference — see
-`backend/app/classifier.py`), new classes can be added to the reference
-gallery without retraining. Run the "V3" section of that notebook in Colab
-(needs live internet access to `dailymed.nlm.nih.gov` + a GPU) to regenerate:
+(e.g. store-brand vs. brand-name ibuprofen).
 
-- `dinov2_projection_head/best_projection_head.pt` (same weights, extended
-  `label_classes`)
-- `dinov2_projection_head/deployed_ref_embeddings.pt` (merged gallery)
-- `otc_reference_images.zip` (drop at the repo root, next to
-  `ePillID_data.zip`) — used by the second entry in `ReferenceImageStore`
-- `backend/app/data/ndc_names.json` (merged with DailyMed drug names)
+### Why one data swap covers every feature, not just image scanning
 
-The backend supports the OTC zip out of the box (`OTC_DATASET_ZIP_PATH` in
-`.env`, see `.env.example`); it's optional — without it the app keeps serving
-ePillID-only thumbnails. Actual OTC accuracy (this repo targets 90%+ top-5 /
-near-100% top-10 on the combined gallery) can only be measured by running the
-notebook's evaluation cell (V3.8) yourself, since it depends on how many
-manufacturer photos DailyMed's API actually returns at harvest time.
+Every backend feature reads from the *same four in-memory objects*, built
+once at startup in `main.py`'s `lifespan()` and never duplicated or
+special-cased per feature:
+
+| Object | Built from | Used by |
+|---|---|---|
+| `classifier` (embeddings + `label_strings`) | `best_projection_head.pt` + `deployed_ref_embeddings.pt` | `POST /api/predict` (photo scan) |
+| `ref_store` | `ePillID_data.zip` + `otc_reference_images.zip` | thumbnails for all of the above |
+| `drug_names` | `backend/app/data/ndc_names.json` | name/imprint/color/shape lookups |
+| `catalog` (built from the three above) | — | `GET /api/search` (manual/"add a medication" name search), `GET /api/search-by-attributes` (appearance filters), `POST /api/ocr-label` (bottle-label OCR matching) |
+
+There's no per-feature ePillID-only code path to find and fix — `catalog.py`
+just iterates whatever is in `label_strings` (see `classifier.py`), and the
+frontend never filters by source. **So the only thing standing between you
+and "everything" including DailyMed OTC pills is whether these four files on
+disk actually contain the merged data.** Once they do, pill scanning, manual
+drug search, "add a medication" in My Pills, the appearance-filter backup,
+and bottle-label OCR all pick it up automatically, with no code changes.
+
+### Steps to actually do it
+
+1. **Run the notebook in Google Colab** (needs a GPU and live internet
+   access to `dailymed.nlm.nih.gov` — this sandbox's network policy blocks
+   both, so this step can't be done from here; it has to run in your own
+   Colab). Run cells 0–13 first (the existing ePillID pipeline — this
+   populates `head_aug`, `ref_feat_448`, `N_CLASSES`, `ref_df`, etc. that
+   the V3 cells depend on), then run the whole "V3: MULTI-DATABASE
+   EXPANSION" section (cells V3.0–V3.11) in order. Expect this to take a
+   while — it's making real HTTP requests to DailyMed for each seed drug
+   name, downloading images, and running CLIP + DINOv2 over all of them.
+2. **Check cell V3.8's printed accuracy** before trusting the result — it
+   reports ePillID top-k (should be roughly unchanged, a regression check)
+   and OTC top-k (the actual new-capability number) separately.
+3. **Download the four files** cell V3.9/V3.10 writes to
+   `RUN_DIR_MAIN/merged_multi_db_export/`:
+   `best_projection_head.pt`, `deployed_ref_embeddings.pt`,
+   `otc_reference_images.zip`, `ndc_names.json`.
+4. **Replace the corresponding files in this repo:**
+   - `dinov2_projection_head/best_projection_head.pt`
+   - `dinov2_projection_head/deployed_ref_embeddings.pt`
+   - `otc_reference_images.zip` at the repo root, next to `ePillID_data.zip`
+   - `backend/app/data/ndc_names.json`
+5. **Commit and push.** `.gitattributes` routes `*.pt` and `*.zip` through
+   Git LFS (needs `git lfs install` once locally if you don't have it) —
+   `deployed_ref_embeddings.pt` grows roughly with the number of reference
+   images, so a large OTC harvest can push it well past ePillID's ~21 MB.
+6. **Redeploy the backend** (rebuild/restart wherever it's hosted — the
+   Docker image, EC2 service, etc.). It only loads these files at process
+   startup; pushing to git alone doesn't reload a running server.
+7. **Verify with `GET /api/health`** — `num_reference_pills` and
+   `num_catalog_entries` should both be higher than the ePillID-only
+   baseline (9,804 reference images / 4,902 classes; 4,100 catalog
+   entries). If they're unchanged, the redeploy didn't pick up the new
+   files — check `MODEL_ARTIFACTS_DIR`/`DATASET_ZIP_PATH` in `.env` point
+   at this repo checkout and that the deploy actually restarted the
+   process (not just redeployed old container layers).
+
+The OTC zip and `ndc_names.json` are optional at boot (see
+`OTC_DATASET_ZIP_PATH` in `.env.example`) — the app still runs fine without
+them, it just serves ePillID-only results everywhere until step 6 is done.
+Actual OTC accuracy (this repo targets 90%+ top-5 / near-100% top-10 on the
+combined gallery) can only be measured by actually running the notebook,
+since it depends on how many manufacturer photos DailyMed returns at
+harvest time — see step 2.
 
 ## Architecture
 
