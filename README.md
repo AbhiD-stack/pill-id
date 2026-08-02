@@ -31,10 +31,16 @@ instead); v3 is the first place they run against real data.
   redrawn every pointer move, which crashed on some mobile browsers under
   that load — replaced outright with `/v1`'s lighter, already-proven
   mechanism rather than patched. A brightness default from Settings is
-  applied once at crop time, not live. Shows 6–10 matches (configurable in
-  Settings). If the right pill isn't in the results, an inline "Search by
-  appearance" panel lets you filter by shape, color, imprint, and score
-  marks instead — a backup, not the primary flow.
+  applied once at crop time, not live. Shows your scanned photo next to the
+  top match for a visual sanity check, and defaults to 10 matches
+  (configurable down to 6 in Settings). If the right pill isn't in the
+  results, an inline "Search by appearance" panel with illustrated
+  dropdowns (color swatches, drawn shape icons, score-line diagrams) lets
+  you filter by color/shape/imprint/score marks instead — a backup, not the
+  primary flow. Shape and score-mark data isn't populated in
+  `ndc_names.json` yet (0 of 4,100 entries as of this writing — see below),
+  so those two filters will come back empty until `build_ndc_names.py` is
+  rerun; color and imprint are populated for ~94% of entries and work now.
 - **My Pills** — save a photo of your own pill under a medication name (found
   either by typing the name or by photographing the bottle label, which is
   OCR'd server-side via `POST /api/ocr-label` and matched against the same
@@ -54,10 +60,9 @@ instead); v3 is the first place they run against real data.
 - **Share** — QR Health Passport (`QRPassport.tsx`, scan-off-the-screen +
   PDF summary) and an Export view (per-session scan token + the clinician/
   usability survey links) as two views in one tab.
-- **Settings** — default capture brightness, number of scan results (6–10),
-  text size, pharmacist contact info (used to prefill the My Pills flag
-  message), and a "replay tutorial" control for the first-run onboarding
-  overlay.
+- **Settings** — default capture brightness, number of scan results (6–10,
+  defaults to 10), text size, and a "replay tutorial" control for the
+  first-run onboarding overlay.
 
 New backend endpoints backing this (`backend/app/main.py`): `GET /api/search`
 (name lookup), `GET /api/search-by-attributes` (shape/color/imprint/score
@@ -69,6 +74,14 @@ the same reference-image labels + `ndc_names.json` the classifier already
 loads — no new data source. Shape/score-mark fields are best-effort (see the
 comment in `backend/scripts/build_ndc_names.py`); older `ndc_names.json`
 entries just won't match those two filters.
+
+**If `/api/search`, `/api/search-by-attributes`, or `/api/ocr-label` return
+literally "Not Found":** that's FastAPI's default body for a URL that
+matches no route at all, not this app's own empty-result message (which
+says "No matches found"/"No matches for those filters"). It means the
+running backend predates these endpoints — redeploy it from the latest
+commit on this branch. The frontend now detects this specific case and
+shows an actionable message instead of the raw "Not Found" text.
 
 ## Multi-database expansion (OTC pills, many manufacturers)
 

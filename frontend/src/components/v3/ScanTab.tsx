@@ -16,6 +16,8 @@ import { addLogEntry, addScheduleEntry, checkCompliance, getRecentDrugNames, typ
 import { fullSafetyCheck, type BeersFlag, type InteractionFlag } from "@/lib/safety";
 import { vibrate } from "@/components/AudioAlert";
 import type { MasterTokenApi } from "@/lib/masterToken";
+import { FilterDropdown, COLOR_OPTIONS, SHAPE_OPTIONS, SCORE_OPTIONS } from "./FilterDropdown";
+import { DisclaimerBanner } from "@/components/Disclaimer";
 
 type Stage = "capture" | "loading" | "results";
 
@@ -122,6 +124,8 @@ export default function ScanTab({ settings, masterToken }: { settings: V3Setting
 
   return (
     <div className="mx-auto max-w-2xl space-y-5">
+      <DisclaimerBanner />
+
       {stage === "capture" && (
         <div>
           <CaptureCropper
@@ -153,6 +157,38 @@ export default function ScanTab({ settings, masterToken }: { settings: V3Setting
               Scan Another
             </button>
           </div>
+
+          {scannedPhoto && results.length > 0 && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="mb-2 text-center text-xs font-bold uppercase tracking-wide text-slate-400">
+                Compare your photo to the best match
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="text-center">
+                  <p className="mb-1.5 text-[11px] font-semibold text-slate-500">Your Photo</p>
+                  <img
+                    src={scannedPhoto}
+                    alt="Your scan"
+                    className="mx-auto h-28 w-28 rounded-xl border border-slate-300 bg-slate-50 object-contain"
+                  />
+                </div>
+                <div className="text-center">
+                  <p className="mb-1.5 text-[11px] font-semibold text-indigo-600">Top Match Reference</p>
+                  {results[0].reference_image_url ? (
+                    <img
+                      src={results[0].reference_image_url}
+                      alt={results[0].name ?? results[0].label}
+                      className="mx-auto h-28 w-28 rounded-xl border border-indigo-200 bg-white object-contain p-1"
+                    />
+                  ) : (
+                    <div className="mx-auto flex h-28 w-28 items-center justify-center rounded-xl bg-indigo-50 text-indigo-300">
+                      No image
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {safety && (safety.beers || safety.interactions.length > 0) && (
             <div className="rounded-xl border-l-4 border-red-500 bg-red-50 p-3">
@@ -310,20 +346,22 @@ function AppearanceFilterFallback() {
         <div className="mt-3 space-y-3">
           <p className="text-xs text-slate-500">
             Describe what the pill looks like — this is a backup for when a photo doesn't match, like a pharmacist
-            identifier guide.
+            identifier guide. Pick the closest option; you don't need every field filled in.
           </p>
           <div className="grid grid-cols-2 gap-2">
-            <input
-              placeholder="Color (e.g. white)"
+            <FilterDropdown
+              label="Color"
+              placeholder="Any color"
               value={filters.color ?? ""}
-              onChange={(e) => setFilters((f) => ({ ...f, color: e.target.value }))}
-              className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              onChange={(v) => setFilters((f) => ({ ...f, color: v }))}
+              options={COLOR_OPTIONS}
             />
-            <input
-              placeholder="Shape (e.g. round)"
+            <FilterDropdown
+              label="Shape"
+              placeholder="Any shape"
               value={filters.shape ?? ""}
-              onChange={(e) => setFilters((f) => ({ ...f, shape: e.target.value }))}
-              className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              onChange={(v) => setFilters((f) => ({ ...f, shape: v }))}
+              options={SHAPE_OPTIONS}
             />
             <input
               placeholder="Imprint (e.g. L484)"
@@ -331,13 +369,18 @@ function AppearanceFilterFallback() {
               onChange={(e) => setFilters((f) => ({ ...f, imprint: e.target.value }))}
               className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
             />
-            <input
-              placeholder="Score marks (e.g. bisected)"
+            <FilterDropdown
+              label="Score marks"
+              placeholder="Any score marks"
               value={filters.score ?? ""}
-              onChange={(e) => setFilters((f) => ({ ...f, score: e.target.value }))}
-              className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              onChange={(v) => setFilters((f) => ({ ...f, score: v }))}
+              options={SCORE_OPTIONS}
             />
           </div>
+          <p className="text-[11px] text-slate-400">
+            Shape and score-mark data is still being added to the reference database — those two filters may not
+            find matches yet even for common pills. Color and imprint are more complete.
+          </p>
           <button
             onClick={runSearch}
             disabled={loading}

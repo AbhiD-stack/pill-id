@@ -40,7 +40,17 @@ export type CatalogMatch = {
 async function readErrorMessage(response: Response, fallback: string): Promise<string> {
   try {
     const data = await response.clone().json();
-    if (typeof data?.detail === "string") return data.detail;
+    if (typeof data?.detail === "string") {
+      // FastAPI's own default body for a URL that doesn't match any route is
+      // exactly {"detail": "Not Found"} -- that's a different problem (the
+      // server is running older code without this endpoint) from this
+      // app's own "no results" responses, which never say that literally.
+      // Surface something actionable instead of the confusing literal text.
+      if (response.status === 404 && data.detail === "Not Found") {
+        return "This feature isn't available on the server yet — it may need to be redeployed with the latest update.";
+      }
+      return data.detail;
+    }
   } catch {
     // not JSON, fall through to plain text
   }
@@ -120,8 +130,7 @@ export async function predictPill(file: File) {
   });
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Prediction request failed with status ${response.status}`);
+    throw new Error(await readErrorMessage(response, `Prediction failed (${response.status}). Please try again.`));
   }
 
   return (await response.json()) as { predictions: PredictionResult[] };

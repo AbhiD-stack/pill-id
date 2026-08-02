@@ -88,27 +88,6 @@ export default function SettingsTab({
         </Field>
       </Section>
 
-      <Section title="Pharmacist contact" hint="Used to pre-fill the 'flag to pharmacist' message in My Pills.">
-        <Field label="Name">
-          <input
-            value={draft.pharmacistName}
-            onChange={(e) => setDraft((d) => ({ ...d, pharmacistName: e.target.value }))}
-            onBlur={() => persist(draft)}
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            placeholder="Optional"
-          />
-        </Field>
-        <Field label="Phone">
-          <input
-            value={draft.pharmacistPhone}
-            onChange={(e) => setDraft((d) => ({ ...d, pharmacistPhone: e.target.value }))}
-            onBlur={() => persist(draft)}
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            placeholder="Optional"
-          />
-        </Field>
-      </Section>
-
       <Section title="Help">
         <button
           onClick={onReplayTutorial}

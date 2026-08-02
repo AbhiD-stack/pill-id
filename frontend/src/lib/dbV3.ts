@@ -41,18 +41,14 @@ export interface V3Settings {
   brightness: number; // 0.5-2.0, applied as a canvas filter at capture time
   resultCount: number; // 6-10, how many scan matches to show
   textSize: "normal" | "large";
-  pharmacistName: string;
-  pharmacistPhone: string;
   onboarded: boolean;
 }
 
 export const DEFAULT_SETTINGS: V3Settings = {
   id: "singleton",
   brightness: 1.0,
-  resultCount: 8,
+  resultCount: 10,
   textSize: "normal",
-  pharmacistName: "",
-  pharmacistPhone: "",
   onboarded: false,
 };
 

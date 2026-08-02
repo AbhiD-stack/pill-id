@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import ReactCrop, { type Crop, centerCrop, makeAspectCrop } from "react-image-crop";
+import ReactCrop, { type Crop, type PixelCrop, centerCrop, makeAspectCrop, convertToPixelCrop } from "react-image-crop";
 import "react-image-crop/dist/ReactCrop.css";
 
 // Same crop/rotate mechanism as v1 (PillIdentifier.tsx): a single file input
@@ -30,7 +30,7 @@ export default function CaptureCropper({
   const [imgSrc, setImgSrc] = useState("");
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [crop, setCrop] = useState<Crop>();
-  const [completedCrop, setCompletedCrop] = useState<Crop | null>(null);
+  const [completedCrop, setCompletedCrop] = useState<PixelCrop | null>(null);
   const [rotation, setRotation] = useState(0);
   const [rotationCount, setRotationCount] = useState(0);
   const [cropAdjustmentCount, setCropAdjustmentCount] = useState(0);
@@ -41,7 +41,11 @@ export default function CaptureCropper({
     const { width, height } = e.currentTarget;
     const initial = centerCrop(makeAspectCrop({ unit: "%", width: 40 }, 1, width, height), width, height);
     setCrop(initial);
-    setCompletedCrop(initial);
+    // centerCrop/makeAspectCrop return a PERCENT crop; onComplete's own pixel
+    // conversion never runs until the user actually drags the rectangle, so
+    // without this explicit conversion, tapping "Use This Photo" on the
+    // untouched default crop would treat 30/40 (percent) as pixel offsets.
+    setCompletedCrop(convertToPixelCrop(initial, width, height));
   }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {

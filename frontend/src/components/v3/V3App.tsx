@@ -7,7 +7,6 @@ import CareTab from "./CareTab";
 import ShareTab from "./ShareTab";
 import SettingsTab from "./SettingsTab";
 import Onboarding from "./Onboarding";
-import { DisclaimerBanner } from "@/components/Disclaimer";
 import { getSettings, saveSettings, DEFAULT_SETTINGS, type V3Settings } from "@/lib/dbV3";
 import { useMasterToken } from "@/lib/masterToken";
 
@@ -56,10 +55,6 @@ export default function V3App() {
           </div>
         </div>
       </header>
-
-      <div className="mx-auto w-full max-w-2xl px-4 pt-4">
-        <DisclaimerBanner />
-      </div>
 
       <main className="flex-1 px-4 py-5">
         {tab === "scan" && <ScanTab settings={settings} masterToken={masterToken} />}
