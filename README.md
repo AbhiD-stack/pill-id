@@ -82,6 +82,23 @@ loads — no new data source. Shape/score-mark fields are best-effort (see the
 comment in `backend/scripts/build_ndc_names.py`); older `ndc_names.json`
 entries just won't match those two filters.
 
+**`/api/search` and `/api/ocr-label` also query DailyMed live** (via
+`backend/app/dailymed_live.py`) to fill out results the local reference
+gallery doesn't have — a name search or bottle-label OCR isn't capped by
+whatever happens to have made it into an embedding gallery on a given day.
+Live results are marked `"source": "dailymed_live"` and show a "Live" badge
+in My Pills' search list; they have no local photo (`reference_image_url`
+is always `null`) since they weren't part of a harvest run. Any DailyMed
+failure (timeout, network error) just means no live results get added — it
+never breaks the local catalog's own results, and there's a small in-memory
+6h cache so the same query doesn't hit DailyMed on every keystroke.
+**This is deliberately name/text search only.** Photo-based scanning
+(`/api/predict`) still only searches the precomputed embedding gallery —
+matching an uploaded photo needs a DINOv2 embedding computed ahead of time,
+which is what the notebook's harvest is for; there's no way to do that
+live inside a single request without turning a sub-second scan into a
+multi-minute one.
+
 **If `/api/search`, `/api/search-by-attributes`, or `/api/ocr-label` return
 literally "Not Found":** that's FastAPI's default body for a URL that
 matches no route at all, not this app's own empty-result message (which
@@ -119,36 +136,54 @@ disk actually contain the merged data.** Once they do, pill scanning, manual
 drug search, "add a medication" in My Pills, the appearance-filter backup,
 and bottle-label OCR all pick it up automatically, with no code changes.
 
-### Two harvest paths: per-item REST vs. bulk zip
+### Two harvest paths: per-item REST vs. bulk zip (Rx + OTC)
 
-The V3 section has two alternative ways to pull OTC data from DailyMed,
-under the same "V3: MULTI-DATABASE EXPANSION" heading:
+The V3 section has two alternative ways to pull data from DailyMed, under
+the same "V3: MULTI-DATABASE EXPANSION" heading:
 
 - **Per-item REST (V3.0–V3.4, the default path)** calls DailyMed's
   `/spls.json` API once per seed drug name and once per matching SPL, over
-  the network. It's the more conservative, tested path, but each request
-  is a real network round-trip plus DailyMed's own rate limiting, so even
-  at a generous time budget it realistically adds on the order of hundreds
-  of new OTC classes per run — not enough to meaningfully close gaps like
-  "this specific manufacturer's rosuvastatin wasn't recognized."
+  the network. It's the more conservative, tested path, but two real
+  limits: each request is a network round-trip plus DailyMed's own rate
+  limiting, so even at a generous time budget it realistically adds only
+  on the order of hundreds of new classes per run; and it only ever seeds
+  OTC generic names (`OTC_CFG.otc_seed_drug_names`), so it can **never**
+  add a prescription-only drug no matter how long it runs.
 - **Bulk zip (the "Optional: bulk-download path" cells, run instead of
-  V3.0–V3.4)** downloads DailyMed's full-release SPL archives
-  (`dm_spl_release_human_otc_part*.zip`) directly and parses the HL7 SPL
-  XML locally — no per-drug network round-trip — which is what makes
-  reaching tens of thousands of classes in a comparable time budget
-  plausible at all. **This path is experimental and has not been run
-  against live DailyMed data** (this sandbox's network policy blocks it,
-  same as the REST path). It includes a structural smoke test right after
-  extraction that prints the first few SPL folders' contents, so if
-  DailyMed's actual archive layout doesn't match what the parser expects,
-  that shows up immediately and loudly instead of silently producing zero
-  usable classes. If the smoke test's printed folder contents look
-  different from what `CELL_B3`'s parser expects (an XML file plus an
-  `images/`-style subfolder per SPL), stop and adjust the parser before
-  continuing — don't run the rest of the pipeline on an unverified
-  assumption. Either path feeds the same `qualifying_products` /
-  `media_by_setid` handoff into V3.5 onward, so nothing past this point
-  needs to change based on which one you use.
+  V3.0–V3.4)** downloads DailyMed's full-release SPL archives directly —
+  both the `human_rx` and `human_otc` release groups, Rx first — and
+  parses the HL7 SPL XML locally, no per-item network round-trip. This is
+  what makes both "tens of thousands of classes in ~2-3 hours" and
+  "actually cover the prescription drugs a clinician flagged" possible at
+  all: **levothyroxine, rosuvastatin, and rabeprazole are all
+  prescription-only**, so the REST path's OTC-only seed list could never
+  have reached them regardless of runtime — only the Rx bulk archives can.
+  Two further changes specifically target real-world ("in the wild")
+  accuracy rather than just raw class count: singleton-image classes
+  (most DailyMed SPLs submit exactly one pill photo) are no longer
+  dropped — they go straight into the reference gallery since retrieval
+  only needs one embedding per class to match against, they just don't
+  get their own held-out accuracy number; and a blur filter (edge-variance
+  heuristic, runs after the existing CLIP pill-vs-packaging filter) drops
+  out-of-focus images that CLIP wouldn't catch. **This path is
+  experimental and has not been run against live DailyMed data** (this
+  sandbox's network policy blocks it, same as the REST path). It includes
+  a structural smoke test right after extraction that prints the first
+  few SPL folders' contents, so if DailyMed's actual archive layout
+  doesn't match what the parser expects, that shows up immediately and
+  loudly instead of silently producing zero usable classes. If the smoke
+  test's printed folder contents look different from what `V3.B3`'s parser
+  expects (an XML file plus image files per SPL folder), stop and adjust
+  the parser before continuing — don't run the rest of the pipeline on an
+  unverified assumption.
+
+Either path feeds the same `qualifying_products` / `media_by_setid`
+handoff into V3.5 onward, so nothing past this point needs to change based
+on which one you use. V3.8's accuracy report also breaks out Rx vs. OTC
+separately when the bulk path was used with Rx included — the blended OTC
+number can look fine while Rx coverage (the thing that actually answers
+the doctors' feedback) is still zero, so that number matters more than the
+combined one for this specific goal.
 
 ### Steps to actually do it
 
@@ -158,11 +193,15 @@ under the same "V3: MULTI-DATABASE EXPANSION" heading:
    Colab). Run cells 0–13 first (the existing ePillID pipeline — this
    populates `head_aug`, `ref_feat_448`, `N_CLASSES`, `ref_df`, etc. that
    the V3 cells depend on), then run **either** the per-item REST cells
-   (V3.0–V3.4) **or** the bulk-zip cells (see above) — not both — followed
-   by the rest of the "V3: MULTI-DATABASE EXPANSION" section (V3.5–V3.11)
-   in order. Expect this to take a while either way — it's making real
-   HTTP requests or large downloads against DailyMed, then running CLIP +
-   DINOv2 over everything collected.
+   (V3.0–V3.4) **or** the bulk-zip cells (V3.B0–V3.B3, see above) — not
+   both — followed by the rest of the "V3: MULTI-DATABASE EXPANSION"
+   section (V3.5–V3.11) in order. For the "tens of thousands of classes,
+   covering the drugs doctors flagged, in ~2-3 hours" goal, use the bulk
+   path — it's the only one of the two that reaches either target. Rough
+   split of a 2-3 hour session: up to 90 min downloading bulk archives (Rx
+   parts first), 30 min parsing, and the remainder for CLIP + blur
+   filtering and DINOv2 feature extraction, which scale with how many
+   images survive filtering, not with network time.
 2. **Check cell V3.8's printed accuracy** before trusting the result — it
    reports ePillID top-k (should be roughly unchanged, a regression check)
    and OTC top-k (the actual new-capability number) separately.
