@@ -215,7 +215,14 @@ combined one for this specific goal.
    415). Rough split of a 2-3 hour session: up to 90 min downloading bulk
    archives (Rx parts first), 30 min parsing, and the remainder for CLIP +
    blur filtering and DINOv2 feature extraction, which scale with how many
-   images survive filtering, not with network time.
+   images survive filtering, not with network time. The bulk archives
+   download to **local Colab disk** (`/content/otc_dailymed_bulk`), not
+   Google Drive — Rx+OTC total tens of GB, which blew through Google
+   Drive's 15GB free quota in a real run after just 3 of 6 Rx parts. Only
+   the small final exports in V3.9/V3.10 need to reach Drive; downloads
+   also stop gracefully under a disk-space floor instead of crashing, and
+   each zip is deleted right after it's extracted to avoid holding both
+   copies on disk at once.
 2. **Check cell V3.8's printed accuracy** before trusting the result — it
    reports ePillID top-k (should be roughly unchanged, a regression check)
    and OTC top-k (the actual new-capability number) separately.
