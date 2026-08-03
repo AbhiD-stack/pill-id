@@ -292,8 +292,18 @@ function MatchList({ results, onPick }: { results: CatalogMatch[] | null; onPick
             <div className="h-11 w-11 rounded-lg bg-slate-100" />
           )}
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold capitalize text-slate-800">{m.name ?? `NDC ${m.ndc}`}</p>
-            <p className="text-[11px] text-slate-400">{[m.color, m.shape, m.imprint].filter(Boolean).join(" · ")}</p>
+            <p className="truncate text-sm font-semibold capitalize text-slate-800">
+              {m.name ?? `NDC ${m.ndc}`}
+              {m.source === "dailymed_live" && (
+                <span className="ml-1.5 rounded-full bg-sky-100 px-1.5 py-0.5 align-middle text-[9px] font-bold uppercase tracking-wide text-sky-600">
+                  Live
+                </span>
+              )}
+            </p>
+            <p className="text-[11px] text-slate-400">
+              {[m.color, m.shape, m.imprint].filter(Boolean).join(" · ") ||
+                (m.source === "dailymed_live" ? "From DailyMed — no local photo yet" : "")}
+            </p>
           </div>
         </button>
       ))}

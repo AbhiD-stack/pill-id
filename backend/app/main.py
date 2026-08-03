@@ -13,6 +13,15 @@ Endpoints:
 The model is loaded once at startup and kept warm in memory. None of these
 endpoints persist an uploaded image to disk or a log; each request is
 processed in memory and discarded once the response is sent.
+
+/api/search and /api/ocr-label both supplement local reference-gallery
+matches with a live DailyMed lookup (dailymed_live.py) when the local
+catalog doesn't fill the requested result count -- this is name/text search
+only, not photo identification. Photo-based scanning (/api/predict) still
+only searches the precomputed embedding gallery; there is no live-DailyMed
+equivalent for that, since matching a photo requires an embedding computed
+ahead of time (see notebooks/), not something that can be done inside a
+single request.
 """
 from __future__ import annotations
 
@@ -26,6 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
 
+import dailymed_live
 import ocr
 from catalog import CatalogEntry, MedicationCatalog
 from classifier import DinoV2PillClassifier
@@ -111,7 +121,32 @@ def _entry_to_dict(entry: CatalogEntry) -> dict:
         "score_marks": entry.score_marks,
         "status": entry.status,
         "reference_image_url": ref_url,
+        "source": "local",
     }
+
+
+def _augment_with_live_dailymed(results: list[dict], query: str, limit: int) -> list[dict]:
+    """Fill remaining slots up to `limit` with live DailyMed name-search
+    results, skipping anything that duplicates a name already in `results`.
+    Best-effort: any DailyMed failure just means no augmentation, never an
+    error surfaced to the caller.
+
+    Requests `limit` (not just the remaining slot count) live results,
+    since some of them will typically be dedup'd away as names already
+    present locally -- asking for only the exact shortfall would silently
+    undershoot `limit` whenever any overlap exists."""
+    if len(results) >= limit:
+        return results
+    seen_names = {(r.get("name") or "").strip().lower() for r in results}
+    for live in dailymed_live.search_dailymed_live(query, limit=limit):
+        if len(results) >= limit:
+            break
+        name_key = (live.get("name") or "").strip().lower()
+        if name_key in seen_names:
+            continue
+        seen_names.add(name_key)
+        results.append(dict(live))
+    return results
 
 
 @app.post("/api/predict")
@@ -191,12 +226,20 @@ def search_by_name(
     limit: int = Query(20, ge=1, le=50),
 ):
     """Look up medications by name -- V3's 'what does my medication currently
-    look like' lookup, independent of any photo scan."""
+    look like' lookup, independent of any photo scan.
+
+    Local reference-gallery matches come first; if there's room left under
+    `limit`, live DailyMed results fill the rest so a name search isn't
+    capped by whatever happens to be in the local embedding gallery. Live
+    results have no local photo/embedding (reference_image_url is always
+    null, source is "dailymed_live") -- they're for finding/naming a
+    medication, not for the image-similarity scan."""
     catalog: MedicationCatalog | None = state["catalog"]
     if catalog is None:
         raise HTTPException(status_code=503, detail="Catalog still loading; try again shortly.")
-    matches = catalog.search_by_name(name, limit=limit)
-    return {"matches": [_entry_to_dict(e) for e in matches]}
+    matches = [_entry_to_dict(e) for e in catalog.search_by_name(name, limit=limit)]
+    matches = _augment_with_live_dailymed(matches, name, limit)
+    return {"matches": matches}
 
 
 @app.get("/api/search-by-attributes")
@@ -260,10 +303,13 @@ async def ocr_label(file: UploadFile = File(...)):
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    candidates = ocr.suggest_candidates_from_text(raw_text, catalog, limit=10)
+    candidates = [_entry_to_dict(e) for e in ocr.suggest_candidates_from_text(raw_text, catalog, limit=10)]
+    guess = ocr.top_phrase(raw_text)
+    if guess:
+        candidates = _augment_with_live_dailymed(candidates, guess, limit=10)
     return {
         "raw_text": raw_text.strip(),
-        "candidates": [_entry_to_dict(e) for e in candidates],
+        "candidates": candidates,
     }
 
 

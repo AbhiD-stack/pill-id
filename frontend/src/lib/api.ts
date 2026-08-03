@@ -29,6 +29,11 @@ export type CatalogMatch = {
   score_marks: string | null;
   status: string | null;
   reference_image_url: string | null;
+  // "local" (default, from the precomputed reference gallery) or
+  // "dailymed_live" (fetched from DailyMed at request time to fill out a
+  // name search -- no local photo/embedding yet). Optional so this stays
+  // backward compatible if an older backend build omits the field.
+  source?: "local" | "dailymed_live";
 };
 
 // Reads an error response body and returns a short, human-readable message.

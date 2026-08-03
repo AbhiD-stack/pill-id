@@ -93,3 +93,13 @@ def suggest_candidates_from_text(
             if len(out) >= limit:
                 break
     return out
+
+
+def top_phrase(raw_text: str) -> Optional[str]:
+    """The single most promising drug-name candidate phrase from OCR'd
+    label text (longest word/word-pair, same ranking _candidate_phrases
+    already uses) -- for callers that want one query string to hand to a
+    live DailyMed lookup rather than searching the local catalog phrase by
+    phrase."""
+    phrases = _candidate_phrases(raw_text)
+    return phrases[0] if phrases else None
