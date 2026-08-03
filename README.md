@@ -136,46 +136,59 @@ disk actually contain the merged data.** Once they do, pill scanning, manual
 drug search, "add a medication" in My Pills, the appearance-filter backup,
 and bottle-label OCR all pick it up automatically, with no code changes.
 
-### Two harvest paths: per-item REST vs. bulk zip (Rx + OTC)
+### Two harvest paths: bulk zip (recommended) vs. per-item REST (legacy)
 
 The V3 section has two alternative ways to pull data from DailyMed, under
-the same "V3: MULTI-DATABASE EXPANSION" heading:
+the same "V3: MULTI-DATABASE EXPANSION" heading. **Bulk zip is the
+recommended default** — per-item REST is left in place for small manual
+spot-checks, not as the primary harvest path, after two real runs against
+it failed outright (HTTP 429 rate-limiting at 12 workers, then HTTP 415 on
+every single `/spls/{setid}.json` request even after fixing the rate
+limit). Both failures are the same class of problem: depending on a live,
+undocumented per-item API endpoint whose exact behavior can't be verified
+ahead of time, so it can misbehave in ways that only surface mid-run.
 
-- **Per-item REST (V3.0–V3.4, the default path)** calls DailyMed's
-  `/spls.json` API once per seed drug name and once per matching SPL, over
-  the network. It's the more conservative, tested path, but two real
-  limits: each request is a network round-trip plus DailyMed's own rate
-  limiting, so even at a generous time budget it realistically adds only
-  on the order of hundreds of new classes per run; and it only ever seeds
-  OTC generic names (`OTC_CFG.otc_seed_drug_names`), so it can **never**
-  add a prescription-only drug no matter how long it runs.
 - **Bulk zip (the "Optional: bulk-download path" cells, run instead of
   V3.0–V3.4)** downloads DailyMed's full-release SPL archives directly —
   both the `human_rx` and `human_otc` release groups, Rx first — and
-  parses the HL7 SPL XML locally, no per-item network round-trip. This is
-  what makes both "tens of thousands of classes in ~2-3 hours" and
-  "actually cover the prescription drugs a clinician flagged" possible at
-  all: **levothyroxine, rosuvastatin, and rabeprazole are all
-  prescription-only**, so the REST path's OTC-only seed list could never
-  have reached them regardless of runtime — only the Rx bulk archives can.
-  Two further changes specifically target real-world ("in the wild")
-  accuracy rather than just raw class count: singleton-image classes
-  (most DailyMed SPLs submit exactly one pill photo) are no longer
+  parses the HL7 SPL XML locally, no per-item network round-trip. No
+  per-item network round-trip also means no per-item endpoint left to 429
+  or 415 on you — the only live network call in this path is the one-time
+  archive download. This is what makes both "tens of thousands of classes
+  in ~2-3 hours" and "actually cover the prescription drugs a clinician
+  flagged" possible at all: **levothyroxine, rosuvastatin, and rabeprazole
+  are all prescription-only**, so the REST path's OTC-only seed list could
+  never have reached them regardless of runtime — only the Rx bulk
+  archives can. Two further changes specifically target real-world ("in
+  the wild") accuracy rather than just raw class count: singleton-image
+  classes (most DailyMed SPLs submit exactly one pill photo) are no longer
   dropped — they go straight into the reference gallery since retrieval
   only needs one embedding per class to match against, they just don't
   get their own held-out accuracy number; and a blur filter (edge-variance
   heuristic, runs after the existing CLIP pill-vs-packaging filter) drops
   out-of-focus images that CLIP wouldn't catch. **This path is
   experimental and has not been run against live DailyMed data** (this
-  sandbox's network policy blocks it, same as the REST path). It includes
-  a structural smoke test right after extraction that prints the first
-  few SPL folders' contents, so if DailyMed's actual archive layout
-  doesn't match what the parser expects, that shows up immediately and
-  loudly instead of silently producing zero usable classes. If the smoke
-  test's printed folder contents look different from what `V3.B3`'s parser
-  expects (an XML file plus image files per SPL folder), stop and adjust
-  the parser before continuing — don't run the rest of the pipeline on an
-  unverified assumption.
+  sandbox's network policy blocks it, same as the REST path) — but its one
+  remaining uncertainty (the exact internal folder layout of DailyMed's
+  archives) is a one-time structural question a smoke test (V3.B2) catches
+  immediately at the start of a run, not a live API surface that can fail
+  unpredictably partway through the way the REST path just did twice. If
+  the smoke test's printed folder contents look different from what
+  `V3.B3`'s parser expects (an XML file plus image files per SPL folder),
+  stop and adjust the parser before continuing — don't run the rest of the
+  pipeline on an unverified assumption. Before running V3.B1, it's also
+  worth opening DailyMed's download index page yourself and copying the
+  Rx/OTC zip link(s) directly into `BULK_CFG.manual_zip_urls` — that
+  sidesteps the one piece of this path that's still a regex match against
+  a live page (auto-discovery), entirely optional if auto-discovery finds
+  the right links itself, but a zero-ambiguity fallback if it doesn't.
+- **Per-item REST (V3.0–V3.4, legacy/spot-check only)** calls DailyMed's
+  `/spls.json` API once per seed drug name and once per matching SPL, over
+  the network. Even with the rate-limit and content-negotiation fixes
+  applied, it realistically adds only on the order of hundreds of new
+  classes per run at best, and it only ever seeds OTC generic names
+  (`OTC_CFG.otc_seed_drug_names`), so it can **never** add a
+  prescription-only drug no matter how long it runs.
 
 Either path feeds the same `qualifying_products` / `media_by_setid`
 handoff into V3.5 onward, so nothing past this point needs to change based
@@ -192,15 +205,16 @@ combined one for this specific goal.
    both, so this step can't be done from here; it has to run in your own
    Colab). Run cells 0–13 first (the existing ePillID pipeline — this
    populates `head_aug`, `ref_feat_448`, `N_CLASSES`, `ref_df`, etc. that
-   the V3 cells depend on), then run **either** the per-item REST cells
-   (V3.0–V3.4) **or** the bulk-zip cells (V3.B0–V3.B3, see above) — not
-   both — followed by the rest of the "V3: MULTI-DATABASE EXPANSION"
-   section (V3.5–V3.11) in order. For the "tens of thousands of classes,
-   covering the drugs doctors flagged, in ~2-3 hours" goal, use the bulk
-   path — it's the only one of the two that reaches either target. Rough
-   split of a 2-3 hour session: up to 90 min downloading bulk archives (Rx
-   parts first), 30 min parsing, and the remainder for CLIP + blur
-   filtering and DINOv2 feature extraction, which scale with how many
+   the V3 cells depend on), then run the bulk-zip cells (V3.B0–V3.B3, see
+   above) — this is the recommended path now, not just one of two equal
+   options — followed by the rest of the "V3: MULTI-DATABASE EXPANSION"
+   section (V3.5–V3.11) in order. Only fall back to the per-item REST cells
+   (V3.0–V3.4) for a small manual spot-check; they can't reach "tens of
+   thousands of classes" or cover prescription drugs at all, and two real
+   runs against them have already failed (429 rate-limiting, then HTTP
+   415). Rough split of a 2-3 hour session: up to 90 min downloading bulk
+   archives (Rx parts first), 30 min parsing, and the remainder for CLIP +
+   blur filtering and DINOv2 feature extraction, which scale with how many
    images survive filtering, not with network time.
 2. **Check cell V3.8's printed accuracy** before trusting the result — it
    reports ePillID top-k (should be roughly unchanged, a regression check)
