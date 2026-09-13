@@ -4,6 +4,8 @@ export type PredictionResult = {
   name: string | null;
   imprint: string | null;
   color: string | null;
+  shape: string | null;
+  score_marks: string | null;
   status: string | null;
   score: number;
   score_pct: number;
@@ -11,6 +13,113 @@ export type PredictionResult = {
 };
 
 const apiBase = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
+
+// ── V3 support: name search, attribute-filter search, bottle-label OCR ─────
+// These don't involve the image-similarity model at all -- they're a separate
+// lookup over the same reference-image/drug-name data, used by V3's "My
+// Pills" name lookup and its scan-fallback filters.
+
+export type CatalogMatch = {
+  label: string;
+  ndc: string | null;
+  name: string | null;
+  imprint: string | null;
+  color: string | null;
+  shape: string | null;
+  score_marks: string | null;
+  status: string | null;
+  reference_image_url: string | null;
+  // "local" (default, from the precomputed reference gallery) or
+  // "dailymed_live" (fetched from DailyMed at request time to fill out a
+  // name search -- no local photo/embedding yet). Optional so this stays
+  // backward compatible if an older backend build omits the field.
+  source?: "local" | "dailymed_live";
+};
+
+// Reads an error response body and returns a short, human-readable message.
+// The backend returns JSON ({"detail": "..."}), but if a request never
+// reaches it (misconfigured NEXT_PUBLIC_API_URL, backend down, a proxy's own
+// 404/502 page) the body can be an HTML error page instead -- dumping that
+// raw HTML into the UI is worse than a generic message, so we only surface
+// text that looks like a short, real error.
+async function readErrorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const data = await response.clone().json();
+    if (typeof data?.detail === "string") {
+      // FastAPI's own default body for a URL that doesn't match any route is
+      // exactly {"detail": "Not Found"} -- that's a different problem (the
+      // server is running older code without this endpoint) from this
+      // app's own "no results" responses, which never say that literally.
+      // Surface something actionable instead of the confusing literal text.
+      if (response.status === 404 && data.detail === "Not Found") {
+        return "This feature isn't available on the server yet — it may need to be redeployed with the latest update.";
+      }
+      return data.detail;
+    }
+  } catch {
+    // not JSON, fall through to plain text
+  }
+  try {
+    const text = (await response.text()).trim();
+    if (text && text.length < 200 && !text.startsWith("<")) return text;
+  } catch {
+    // ignore
+  }
+  return fallback;
+}
+
+async function getJson<T>(path: string): Promise<T> {
+  const response = await fetch(`${apiBase}${path}`, {
+    headers: { "ngrok-skip-browser-warning": "true" },
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, `Request failed (${response.status}). Please try again.`));
+  }
+  return response.json();
+}
+
+export async function searchByName(name: string, limit = 20): Promise<CatalogMatch[]> {
+  if (!name.trim()) return [];
+  const { matches } = await getJson<{ matches: CatalogMatch[] }>(
+    `/api/search?name=${encodeURIComponent(name)}&limit=${limit}`
+  );
+  return matches;
+}
+
+export type AttributeFilters = {
+  color?: string;
+  shape?: string;
+  imprint?: string;
+  score?: string;
+};
+
+export async function searchByAttributes(filters: AttributeFilters, limit = 20): Promise<CatalogMatch[]> {
+  const params = new URLSearchParams();
+  if (filters.color) params.set("color", filters.color);
+  if (filters.shape) params.set("shape", filters.shape);
+  if (filters.imprint) params.set("imprint", filters.imprint);
+  if (filters.score) params.set("score", filters.score);
+  if ([...params.keys()].length === 0) return [];
+  params.set("limit", String(limit));
+  const { matches } = await getJson<{ matches: CatalogMatch[] }>(
+    `/api/search-by-attributes?${params.toString()}`
+  );
+  return matches;
+}
+
+export async function ocrLabel(file: File): Promise<{ raw_text: string; candidates: CatalogMatch[] }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const response = await fetch(`${apiBase}/api/ocr-label`, {
+    method: "POST",
+    body: formData,
+    headers: { "ngrok-skip-browser-warning": "true" },
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, `OCR failed (${response.status}). Please try again.`));
+  }
+  return response.json();
+}
 
 export async function predictPill(file: File) {
   const formData = new FormData();
@@ -26,8 +135,7 @@ export async function predictPill(file: File) {
   });
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Prediction request failed with status ${response.status}`);
+    throw new Error(await readErrorMessage(response, `Prediction failed (${response.status}). Please try again.`));
   }
 
   return (await response.json()) as { predictions: PredictionResult[] };

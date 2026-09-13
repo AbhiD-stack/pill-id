@@ -5,6 +5,7 @@ code runs unchanged on a laptop and on the EC2 host. See .env.example.
 """
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -26,6 +27,12 @@ class Settings(BaseSettings):
 
     # The ePillID dataset zip used to display matched reference pill images.
     dataset_zip_path: Path = REPO_ROOT / "ePillID_data.zip"
+
+    # Optional second reference-image zip for OTC/DailyMed pill photos (see
+    # notebooks/Backup_New_phase_2_model_2_multi_database.ipynb, cell V3.9).
+    # Left unset until that zip has been generated and copied into the repo;
+    # the model still loads and serves ePillID thumbnails fine without it.
+    otc_dataset_zip_path: Optional[Path] = REPO_ROOT / "otc_reference_images.zip"
 
     # "auto" -> cuda if available, else mps (Apple Silicon), else cpu.
     # Override with "cpu" / "mps" / "cuda" if needed.

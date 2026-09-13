@@ -24,6 +24,11 @@ class DrugInfo(TypedDict, total=False):
     imprint: Optional[str]
     color: Optional[str]
     status: Optional[str]
+    # Populated by a newer run of scripts/build_ndc_names.py (see its shape/score
+    # capture); older entries in ndc_names.json simply won't have these keys,
+    # which every reader here treats as "unknown" rather than an error.
+    shape: Optional[str]
+    score: Optional[str]
 
 
 def ndc_from_ref_path(ref_path: str) -> str:

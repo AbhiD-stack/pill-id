@@ -11,9 +11,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (tesseract-ocr backs the V3 bottle-label OCR
+# endpoint; the app still starts fine without it, that endpoint just reports
+# itself unavailable via /api/health's ocr_available field)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libjpeg62-turbo libpng16-16 && \
+    libjpeg62-turbo libpng16-16 tesseract-ocr && \
     rm -rf /var/lib/apt/lists/*
 
 # Create artifacts directory and set permissions for the non-root user

@@ -69,6 +69,24 @@ def _rxname(rxcui: str, cache: dict[str, str | None]) -> str | None:
     return name
 
 
+def _find_prop_containing(props: dict[str, str], *substrings: str) -> str | None:
+    """Find a propertyConceptList value by substring match on its propName.
+
+    We only have verified propName keys for IMPRINT_CODE/COLORTEXT/NDC_STATUS
+    (used below, from the existing working lookup). RxNav's exact key for
+    shape/scoring isn't confirmed against a live response here, so rather than
+    hardcode a guessed exact key that might silently never match, we scan for
+    any propName containing the given substring(s) -- e.g. a key like "SHAPE"
+    or "SPLSHAPE_TEXT" both match substring "SHAPE". Spot-check a few results
+    the first time you run this against real data.
+    """
+    for prop_name, value in props.items():
+        upper = prop_name.upper()
+        if any(s in upper for s in substrings) and value:
+            return value
+    return None
+
+
 def resolve(token: str, rx_cache: dict[str, str | None]) -> tuple[str, dict | None]:
     for cand in _candidates(token):
         data = _get(f"{BASE}/ndcproperties.json?id={cand}&ndcstatus=ALL")
@@ -90,6 +108,8 @@ def resolve(token: str, rx_cache: dict[str, str | None]) -> tuple[str, dict | No
             "imprint": props.get("IMPRINT_CODE") or None,
             "color": props.get("COLORTEXT") or None,
             "status": props.get("NDC_STATUS") or None,
+            "shape": _find_prop_containing(props, "SHAPE"),
+            "score": _find_prop_containing(props, "SCORE"),
         }
     return token, None
 

@@ -11,6 +11,253 @@ best-matching reference image.
 > be wrong. Never rely on this tool to identify medication. Always confirm with a
 > pharmacist, physician, or official packaging.
 
+## Version 3 UI (`/v3`)
+
+A third frontend UI, separate from `/v1` and `/v2` (same backend, own routes
+under `frontend/src/app/v3/` and `frontend/src/components/v3/`), focused on
+day-to-day usability rather than the pilot/research instrumentation in `/v1`
+and `/v2`. Carries forward every v2 feature (schedule, Beers/interaction
+safety checks, QR passport, survey export) plus the additions below, grouped
+into five tabs instead of growing the nav 1:1 — v2's own shell (`MainApp.tsx`)
+never actually wired `Scheduler.tsx`/`SafetyReport.tsx`/`QRPassport.tsx` into
+its Schedule/Safety/Passport tabs (those showed hardcoded mock content
+instead); v3 is the first place they run against real data.
+
+- **Scan** — a single "Take or Upload Photo" button (a plain file input with
+  no `capture` attribute, so mobile browsers show their native Camera/Photo
+  Library/Files picker) followed by the same crop-and-rotate flow as `/v1`
+  (`react-image-crop`'s draggable/resizable rectangle, no pinch/zoom). An
+  earlier version used a live camera preview plus pinch-to-zoom on a canvas
+  redrawn every pointer move, which crashed on some mobile browsers under
+  that load — replaced outright with `/v1`'s lighter, already-proven
+  mechanism rather than patched. A brightness default from Settings is
+  applied once at crop time, not live. Shows your scanned photo next to the
+  top match for a visual sanity check, and defaults to 10 matches
+  (configurable down to 6 in Settings). If the right pill isn't in the
+  results, an inline "Search by appearance" panel with illustrated
+  dropdowns (color swatches, drawn shape icons, score-line diagrams) lets
+  you filter by color/shape/imprint/score marks instead — a backup, not the
+  primary flow. Shape and score-mark data isn't populated in
+  `ndc_names.json` yet (0 of 4,100 entries as of this writing — see below),
+  so those two filters will come back empty until `build_ndc_names.py` is
+  rerun; color and imprint are populated for ~94% of entries and work now.
+- **My Pills** — save a photo of your own pill under a medication name (found
+  either by typing the name or by photographing the bottle label, which is
+  OCR'd server-side via `POST /api/ocr-label` and matched against the same
+  drug-name catalog). Later, the tab re-fetches what that medication
+  currently looks like on file and flags any changed imprint/color/shape —
+  e.g. after a manufacturer or supplier change — with a one-tap message you
+  can copy to send a pharmacist. All of this (personal photos, settings) is
+  stored only in the browser's IndexedDB; nothing is uploaded to an account
+  or persisted server-side, and there's no login. This app has no IRB review
+  and isn't a HIPAA-covered entity's system — see the in-app Settings privacy
+  note before pointing it at real patient data.
+- **Care** — Schedule (morning/noon/night, via `Scheduler.tsx`) and Safety
+  (Beers Criteria + drug-interaction flags against your schedule, via
+  `SafetyReport.tsx`) as two views in one tab. Each Scan result also gets
+  one-tap "add to schedule" buttons, and the top match is safety-checked
+  immediately after a scan. As an alternative to tapping, you can also drag
+  a result card straight onto a Morning/Noon/Night box (`DragToSchedule.tsx`,
+  Pointer Events–based so it works with mouse/touch/pen alike). The three
+  drop zones are intentionally large, high-contrast, and fixed in place —
+  per Fitts's Law, movement time to a target scales with distance and
+  shrinks with target size, which matters for a population with reduced
+  fine motor control. Each card also keeps its original tap buttons; drag
+  is additive, not a replacement.
+- **Share** — QR Health Passport (`QRPassport.tsx`, scan-off-the-screen +
+  PDF summary) and an Export view (per-session scan token + the clinician/
+  usability survey links) as two views in one tab.
+- **Settings** — default capture brightness, number of scan results (6–10,
+  defaults to 10), text size, and a "replay tutorial" control for the
+  first-run onboarding overlay.
+
+New backend endpoints backing this (`backend/app/main.py`): `GET /api/search`
+(name lookup), `GET /api/search-by-attributes` (shape/color/imprint/score
+filter), `POST /api/ocr-label` (bottle-label OCR via `pytesseract` +
+`tesseract-ocr`, see `backend/app/ocr.py` and the Dockerfile). None of these
+persist an uploaded image; each request is processed in memory and discarded.
+`backend/app/catalog.py` builds the name/attribute index once at startup from
+the same reference-image labels + `ndc_names.json` the classifier already
+loads — no new data source. Shape/score-mark fields are best-effort (see the
+comment in `backend/scripts/build_ndc_names.py`); older `ndc_names.json`
+entries just won't match those two filters.
+
+**`/api/search` and `/api/ocr-label` also query DailyMed live** (via
+`backend/app/dailymed_live.py`) to fill out results the local reference
+gallery doesn't have — a name search or bottle-label OCR isn't capped by
+whatever happens to have made it into an embedding gallery on a given day.
+Live results are marked `"source": "dailymed_live"` and show a "Live" badge
+in My Pills' search list; they have no local photo (`reference_image_url`
+is always `null`) since they weren't part of a harvest run. Any DailyMed
+failure (timeout, network error) just means no live results get added — it
+never breaks the local catalog's own results, and there's a small in-memory
+6h cache so the same query doesn't hit DailyMed on every keystroke.
+**This is deliberately name/text search only.** Photo-based scanning
+(`/api/predict`) still only searches the precomputed embedding gallery —
+matching an uploaded photo needs a DINOv2 embedding computed ahead of time,
+which is what the notebook's harvest is for; there's no way to do that
+live inside a single request without turning a sub-second scan into a
+multi-minute one.
+
+**If `/api/search`, `/api/search-by-attributes`, or `/api/ocr-label` return
+literally "Not Found":** that's FastAPI's default body for a URL that
+matches no route at all, not this app's own empty-result message (which
+says "No matches found"/"No matches for those filters"). It means the
+running backend predates these endpoints — redeploy it from the latest
+commit on this branch. The frontend now detects this specific case and
+shows an actionable message instead of the raw "Not Found" text.
+
+## Multi-database expansion (OTC pills, many manufacturers)
+
+`notebooks/Backup_New_phase_2_model_2_multi_database.ipynb` extends the
+retrieval gallery beyond the 4,902 ePillID classes with over-the-counter
+products harvested live from DailyMed (NIH/FDA's structured product labeling
+database), covering many different manufacturers of the same generic drug
+(e.g. store-brand vs. brand-name ibuprofen).
+
+### Why one data swap covers every feature, not just image scanning
+
+Every backend feature reads from the *same four in-memory objects*, built
+once at startup in `main.py`'s `lifespan()` and never duplicated or
+special-cased per feature:
+
+| Object | Built from | Used by |
+|---|---|---|
+| `classifier` (embeddings + `label_strings`) | `best_projection_head.pt` + `deployed_ref_embeddings.pt` | `POST /api/predict` (photo scan) |
+| `ref_store` | `ePillID_data.zip` + `otc_reference_images.zip` | thumbnails for all of the above |
+| `drug_names` | `backend/app/data/ndc_names.json` | name/imprint/color/shape lookups |
+| `catalog` (built from the three above) | — | `GET /api/search` (manual/"add a medication" name search), `GET /api/search-by-attributes` (appearance filters), `POST /api/ocr-label` (bottle-label OCR matching) |
+
+There's no per-feature ePillID-only code path to find and fix — `catalog.py`
+just iterates whatever is in `label_strings` (see `classifier.py`), and the
+frontend never filters by source. **So the only thing standing between you
+and "everything" including DailyMed OTC pills is whether these four files on
+disk actually contain the merged data.** Once they do, pill scanning, manual
+drug search, "add a medication" in My Pills, the appearance-filter backup,
+and bottle-label OCR all pick it up automatically, with no code changes.
+
+### Two harvest paths: bulk zip (recommended) vs. per-item REST (legacy)
+
+The V3 section has two alternative ways to pull data from DailyMed, under
+the same "V3: MULTI-DATABASE EXPANSION" heading. **Bulk zip is the
+recommended default** — per-item REST is left in place for small manual
+spot-checks, not as the primary harvest path, after two real runs against
+it failed outright (HTTP 429 rate-limiting at 12 workers, then HTTP 415 on
+every single `/spls/{setid}.json` request even after fixing the rate
+limit). Both failures are the same class of problem: depending on a live,
+undocumented per-item API endpoint whose exact behavior can't be verified
+ahead of time, so it can misbehave in ways that only surface mid-run.
+
+- **Bulk zip (the "Optional: bulk-download path" cells, run instead of
+  V3.0–V3.4)** downloads DailyMed's full-release SPL archives directly —
+  both the `human_rx` and `human_otc` release groups, Rx first — and
+  parses the HL7 SPL XML locally, no per-item network round-trip. No
+  per-item network round-trip also means no per-item endpoint left to 429
+  or 415 on you — the only live network call in this path is the one-time
+  archive download. This is what makes both "tens of thousands of classes
+  in ~2-3 hours" and "actually cover the prescription drugs a clinician
+  flagged" possible at all: **levothyroxine, rosuvastatin, and rabeprazole
+  are all prescription-only**, so the REST path's OTC-only seed list could
+  never have reached them regardless of runtime — only the Rx bulk
+  archives can. Two further changes specifically target real-world ("in
+  the wild") accuracy rather than just raw class count: singleton-image
+  classes (most DailyMed SPLs submit exactly one pill photo) are no longer
+  dropped — they go straight into the reference gallery since retrieval
+  only needs one embedding per class to match against, they just don't
+  get their own held-out accuracy number; and a blur filter (edge-variance
+  heuristic, runs after the existing CLIP pill-vs-packaging filter) drops
+  out-of-focus images that CLIP wouldn't catch. **This path is
+  experimental and has not been run against live DailyMed data** (this
+  sandbox's network policy blocks it, same as the REST path) — but its one
+  remaining uncertainty (the exact internal folder layout of DailyMed's
+  archives) is a one-time structural question a smoke test (V3.B2) catches
+  immediately at the start of a run, not a live API surface that can fail
+  unpredictably partway through the way the REST path just did twice. If
+  the smoke test's printed folder contents look different from what
+  `V3.B3`'s parser expects (an XML file plus image files per SPL folder),
+  stop and adjust the parser before continuing — don't run the rest of the
+  pipeline on an unverified assumption. Before running V3.B1, it's also
+  worth opening DailyMed's download index page yourself and copying the
+  Rx/OTC zip link(s) directly into `BULK_CFG.manual_zip_urls` — that
+  sidesteps the one piece of this path that's still a regex match against
+  a live page (auto-discovery), entirely optional if auto-discovery finds
+  the right links itself, but a zero-ambiguity fallback if it doesn't.
+- **Per-item REST (V3.0–V3.4, legacy/spot-check only)** calls DailyMed's
+  `/spls.json` API once per seed drug name and once per matching SPL, over
+  the network. Even with the rate-limit and content-negotiation fixes
+  applied, it realistically adds only on the order of hundreds of new
+  classes per run at best, and it only ever seeds OTC generic names
+  (`OTC_CFG.otc_seed_drug_names`), so it can **never** add a
+  prescription-only drug no matter how long it runs.
+
+Either path feeds the same `qualifying_products` / `media_by_setid`
+handoff into V3.5 onward, so nothing past this point needs to change based
+on which one you use. V3.8's accuracy report also breaks out Rx vs. OTC
+separately when the bulk path was used with Rx included — the blended OTC
+number can look fine while Rx coverage (the thing that actually answers
+the doctors' feedback) is still zero, so that number matters more than the
+combined one for this specific goal.
+
+### Steps to actually do it
+
+1. **Run the notebook in Google Colab** (needs a GPU and live internet
+   access to `dailymed.nlm.nih.gov` — this sandbox's network policy blocks
+   both, so this step can't be done from here; it has to run in your own
+   Colab). Run cells 0–13 first (the existing ePillID pipeline — this
+   populates `head_aug`, `ref_feat_448`, `N_CLASSES`, `ref_df`, etc. that
+   the V3 cells depend on), then run the bulk-zip cells (V3.B0–V3.B3, see
+   above) — this is the recommended path now, not just one of two equal
+   options — followed by the rest of the "V3: MULTI-DATABASE EXPANSION"
+   section (V3.5–V3.11) in order. Only fall back to the per-item REST cells
+   (V3.0–V3.4) for a small manual spot-check; they can't reach "tens of
+   thousands of classes" or cover prescription drugs at all, and two real
+   runs against them have already failed (429 rate-limiting, then HTTP
+   415). Rough split of a 2-3 hour session: up to 90 min downloading bulk
+   archives (Rx parts first), 30 min parsing, and the remainder for CLIP +
+   blur filtering and DINOv2 feature extraction, which scale with how many
+   images survive filtering, not with network time. The bulk archives
+   download to **local Colab disk** (`/content/otc_dailymed_bulk`), not
+   Google Drive — Rx+OTC total tens of GB, which blew through Google
+   Drive's 15GB free quota in a real run after just 3 of 6 Rx parts. Only
+   the small final exports in V3.9/V3.10 need to reach Drive; downloads
+   also stop gracefully under a disk-space floor instead of crashing, and
+   each zip is deleted right after it's extracted to avoid holding both
+   copies on disk at once.
+2. **Check cell V3.8's printed accuracy** before trusting the result — it
+   reports ePillID top-k (should be roughly unchanged, a regression check)
+   and OTC top-k (the actual new-capability number) separately.
+3. **Download the four files** cell V3.9/V3.10 writes to
+   `RUN_DIR_MAIN/merged_multi_db_export/`:
+   `best_projection_head.pt`, `deployed_ref_embeddings.pt`,
+   `otc_reference_images.zip`, `ndc_names.json`.
+4. **Replace the corresponding files in this repo:**
+   - `dinov2_projection_head/best_projection_head.pt`
+   - `dinov2_projection_head/deployed_ref_embeddings.pt`
+   - `otc_reference_images.zip` at the repo root, next to `ePillID_data.zip`
+   - `backend/app/data/ndc_names.json`
+5. **Commit and push.** `.gitattributes` routes `*.pt` and `*.zip` through
+   Git LFS (needs `git lfs install` once locally if you don't have it) —
+   `deployed_ref_embeddings.pt` grows roughly with the number of reference
+   images, so a large OTC harvest can push it well past ePillID's ~21 MB.
+6. **Redeploy the backend** (rebuild/restart wherever it's hosted — the
+   Docker image, EC2 service, etc.). It only loads these files at process
+   startup; pushing to git alone doesn't reload a running server.
+7. **Verify with `GET /api/health`** — `num_reference_pills` and
+   `num_catalog_entries` should both be higher than the ePillID-only
+   baseline (9,804 reference images / 4,902 classes; 4,100 catalog
+   entries). If they're unchanged, the redeploy didn't pick up the new
+   files — check `MODEL_ARTIFACTS_DIR`/`DATASET_ZIP_PATH` in `.env` point
+   at this repo checkout and that the deploy actually restarted the
+   process (not just redeployed old container layers).
+
+The OTC zip and `ndc_names.json` are optional at boot (see
+`OTC_DATASET_ZIP_PATH` in `.env.example`) — the app still runs fine without
+them, it just serves ePillID-only results everywhere until step 6 is done.
+Actual OTC accuracy (this repo targets 90%+ top-5 / near-100% top-10 on the
+combined gallery) can only be measured by actually running the notebook,
+since it depends on how many manufacturer photos DailyMed returns at
+harvest time — see step 2.
+
 ## Architecture
 
 ```
@@ -31,7 +278,7 @@ warm in memory. The frontend is a thin client that can be hosted anywhere.
 |------|------|
 | `backend/` | FastAPI inference service (model, reference-image serving, drug-name lookup) |
 | `backend/app/data/ndc_names.json` | Precomputed NDC → drug name/imprint/color table (from NIH RxNav) |
-| `frontend/` | Next.js app: landing page at `/`, original UI at `/v1`, new UI at `/v2` — both call the same backend |
+| `frontend/` | Next.js app: landing page at `/`, original UI at `/v1`, new UI at `/v2`, usability-focused UI at `/v3` — all call the same backend |
 | `deploy/` | Docker Compose + Caddy (auto-HTTPS) + systemd for EC2 |
 | `dinov2_projection_head/`, `config.json` | Trained model artifacts |
 | `ePillID_data.zip` | Reference image dataset (Git LFS) |
