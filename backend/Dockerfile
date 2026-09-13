@@ -13,7 +13,7 @@ WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libjpeg62-turbo libpng16-16 && \
+    libjpeg62-turbo libpng16-16 tesseract-ocr && \
     rm -rf /var/lib/apt/lists/*
 
 # Create artifacts directory and set permissions for the non-root user

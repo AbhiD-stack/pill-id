@@ -9,34 +9,44 @@ import { speak, vibrate } from "./AudioAlert";
 import { logTelemetry } from "@/lib/telemetry";
 import ImageCapture from "./ImageCapture";
 
-type Stage = "capture" | "identifying" | "results";
+type Stage = "capture-front" | "capture-back" | "identifying" | "results";
 
 export default function Scanner() {
-  const [stage, setStage] = useState<Stage>("capture");
+  const [stage, setStage] = useState<Stage>("capture-front");
   const [statusMsg, setStatusMsg] = useState("Analyzing pill features...");
   const [matches, setMatches] = useState<PillMatch[] | null>(null);
+  const [lowConfidence, setLowConfidence] = useState(false);
+  const [ocrImprintRead, setOcrImprintRead] = useState<string | null>(null);
   const [safetyNote, setSafetyNote] = useState<string | null>(null);
   const [scanTime, setScanTime] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [frontCanvas, setFrontCanvas] = useState<HTMLCanvasElement | null>(null);
 
-  const handleImageReady = async (canvas: HTMLCanvasElement) => {
+  const handleFrontCaptured = (canvas: HTMLCanvasElement) => {
+    setFrontCanvas(canvas);
+    setPreviewUrl(canvas.toDataURL());
+    setStage("capture-back");
+  };
+
+  const runIdentify = async (front: HTMLCanvasElement, back: HTMLCanvasElement | null) => {
     setStage("identifying");
     setStatusMsg("Analyzing pill features...");
     setScanTime(null);
-    setPreviewUrl(canvas.toDataURL());
 
     const t0 = performance.now();
 
     try {
-      const results = await identifyPill(canvas, 5);
+      const result = await identifyPill(front, 5, back);
       const latency = performance.now() - t0;
       setScanTime(Math.round(latency));
       logTelemetry("identify_pill", latency);
 
-      setMatches(results);
+      setMatches(result.matches);
+      setLowConfidence(result.lowConfidence);
+      setOcrImprintRead(result.ocrImprintRead);
       setStage("results");
 
-      const top = results[0];
+      const top = result.matches[0];
       if (top) {
         vibrate([100, 50, 100]);
 
@@ -54,16 +64,19 @@ export default function Scanner() {
     } catch (err) {
       console.error("Scan failed:", err);
       setStatusMsg("Scan failed. Try again.");
-      setStage("capture");
+      setStage("capture-front");
     }
   };
 
   const resetScanner = () => {
     setMatches(null);
+    setLowConfidence(false);
+    setOcrImprintRead(null);
     setSafetyNote(null);
     setScanTime(null);
     setPreviewUrl(null);
-    setStage("capture");
+    setFrontCanvas(null);
+    setStage("capture-front");
   };
 
   async function scheduleDrop(match: PillMatch, bucket: TimeOfDay) {
@@ -87,10 +100,21 @@ export default function Scanner() {
 
   return (
     <div>
-      {stage === "capture" && (
+      {stage === "capture-front" && (
         <ImageCapture
-          onImageReady={(canvas) => handleImageReady(canvas)}
-          onCancel={() => setStage("capture")}
+          sideLabel="front"
+          onImageReady={(canvas) => handleFrontCaptured(canvas)}
+          onCancel={() => setStage("capture-front")}
+        />
+      )}
+
+      {stage === "capture-back" && frontCanvas && (
+        <ImageCapture
+          sideLabel="back"
+          allowSkip
+          onSkip={() => runIdentify(frontCanvas, null)}
+          onImageReady={(canvas) => runIdentify(frontCanvas, canvas)}
+          onCancel={() => setStage("capture-front")}
         />
       )}
 
@@ -105,6 +129,8 @@ export default function Scanner() {
       {stage === "results" && matches && (
         <ResultsView
           matches={matches}
+          lowConfidence={lowConfidence}
+          ocrImprintRead={ocrImprintRead}
           safetyNote={safetyNote}
           scanTime={scanTime}
           previewUrl={previewUrl}
@@ -118,6 +144,8 @@ export default function Scanner() {
 
 function ResultsView({
   matches,
+  lowConfidence,
+  ocrImprintRead,
   safetyNote,
   scanTime,
   previewUrl,
@@ -125,6 +153,8 @@ function ResultsView({
   onRetake,
 }: {
   matches: PillMatch[];
+  lowConfidence: boolean;
+  ocrImprintRead: string | null;
   safetyNote: string | null;
   scanTime: number | null;
   previewUrl: string | null;
@@ -144,6 +174,22 @@ function ResultsView({
 
   return (
     <div className="space-y-6 max-w-3xl mx-auto pb-12">
+      {lowConfidence && (
+        <div className="bg-red-50 border-l-4 border-red-500 rounded-r-xl p-4 shadow-sm">
+          <p className="text-sm text-red-900 font-semibold">
+            ⚠ Low confidence match — none of these candidates strongly match the photo.
+          </p>
+          <p className="text-xs text-red-800 mt-1">
+            Do not act on this result. Retake with better lighting/focus, or confirm with a
+            pharmacist and the physical packaging.
+          </p>
+        </div>
+      )}
+      {ocrImprintRead && (
+        <p className="text-xs text-slate-400 text-center">
+          Imprint text read from photo: <span className="font-mono">{ocrImprintRead}</span>
+        </p>
+      )}
       {scanTime && (
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center shadow-sm">
           <p className="text-xs text-slate-600 font-medium">

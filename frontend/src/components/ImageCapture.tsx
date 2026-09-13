@@ -7,9 +7,17 @@ type CaptureMode = "upload" | "camera" | "preview";
 export default function ImageCapture({
   onImageReady,
   onCancel,
+  sideLabel,
+  allowSkip,
+  onSkip,
 }: {
   onImageReady: (canvas: HTMLCanvasElement, width: number, height: number, rotation: number, adjustments: number) => void;
   onCancel: () => void;
+  /** e.g. "front" or "back" — shown to guide which face of the pill to capture. */
+  sideLabel?: string;
+  /** Show a "skip this side" option (used for the optional back-side step). */
+  allowSkip?: boolean;
+  onSkip?: () => void;
 }) {
   const [mode, setMode] = useState<CaptureMode>("upload");
   const [previewSrc, setPreviewSrc] = useState<string>("");
@@ -216,7 +224,9 @@ export default function ImageCapture({
       {mode === "upload" && (
         <div className="bg-blue-50 border-2 border-dashed border-blue-300 rounded-lg p-6 text-center">
           <div className="text-4xl mb-3">📸</div>
-          <h3 className="font-semibold text-slate-900 mb-2">Upload or Capture Pill Image</h3>
+          <h3 className="font-semibold text-slate-900 mb-2">
+            {sideLabel ? `Capture the ${sideLabel} of the pill` : "Upload or Capture Pill Image"}
+          </h3>
           <p className="text-sm text-slate-600 mb-4">Get the best results with good lighting and tight crop.</p>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -235,10 +245,20 @@ export default function ImageCapture({
             </button>
           </div>
 
+          {allowSkip && (
+            <button
+              onClick={onSkip}
+              className="mt-3 text-sm text-slate-500 hover:text-slate-700 underline"
+            >
+              Skip — I don't have this side
+            </button>
+          )}
+
           <input
             ref={fileInputRef}
             type="file"
             accept="image/*"
+            capture="environment"
             onChange={handleFileSelect}
             className="hidden"
           />
@@ -247,6 +267,11 @@ export default function ImageCapture({
 
       {mode === "camera" && (
         <div className="space-y-3">
+          {sideLabel && (
+            <p className="text-sm font-medium text-slate-700 text-center">
+              Frame the <span className="font-semibold">{sideLabel}</span> of the pill
+            </p>
+          )}
           <video
             ref={videoRef}
             autoPlay

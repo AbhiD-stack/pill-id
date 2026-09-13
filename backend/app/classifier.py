@@ -125,17 +125,31 @@ class DinoV2PillClassifier:
         return F.normalize(emb, dim=1)
 
     @torch.no_grad()
-    def predict_topk(self, image: Image.Image, k: int = 10) -> List[Prediction]:
+    def _best_per_label(self, image: Image.Image) -> tuple[torch.Tensor, torch.Tensor]:
+        """Returns (scores_by_label, similarities) for a single query image."""
         query_emb = self._embed(image)
         similarities = (query_emb @ self.ref_embeddings.T).squeeze(0)
-
-        # Best similarity per pill label.
         scores_by_label = torch.full(
             (self.label_strings.shape[0],), -torch.inf, device=self.device
         )
         scores_by_label.scatter_reduce_(
             0, self.ref_label_indices, similarities, reduce="amax", include_self=True
         )
+        return scores_by_label, similarities
+
+    @torch.no_grad()
+    def predict_topk(self, image: Image.Image, k: int = 10) -> List[Prediction]:
+        return self.predict_topk_multi([image], k=k)
+
+    @torch.no_grad()
+    def predict_topk_multi(self, images: List[Image.Image], k: int = 10) -> List[Prediction]:
+        """Front/back-aware retrieval: each image is scored independently and the
+        per-label scores are averaged (mean aggregation), matching the sidepair
+        fusion strategy validated during training. Falls back to a single image
+        seamlessly (the average of one value is itself)."""
+        per_image = [self._best_per_label(img) for img in images]
+        scores_by_label = torch.stack([s for s, _ in per_image], dim=0).mean(dim=0)
+        similarities_per_image = [sims for _, sims in per_image]
 
         k = min(k, self.num_reference_pills)
         top_scores, top_label_indices = scores_by_label.topk(k)
@@ -143,12 +157,20 @@ class DinoV2PillClassifier:
         predictions: List[Prediction] = []
         for score, label_idx in zip(top_scores.cpu().tolist(), top_label_indices):
             mask = self.ref_label_indices == label_idx
-            sims_for_label = similarities[mask]
+            # Best-matching reference image across whichever side (front/back)
+            # scored it highest, not just the first image.
             ref_path = "N/A"
-            if sims_for_label.numel() > 0:
-                best_local = torch.argmax(sims_for_label)
-                global_idx = torch.nonzero(mask).squeeze(1)[best_local]
-                ref_path = str(self.ref_abs_paths[global_idx.item()])
+            best_sim = -torch.inf
+            for sims in similarities_per_image:
+                sims_for_label = sims[mask]
+                if sims_for_label.numel() == 0:
+                    continue
+                local_best = torch.argmax(sims_for_label)
+                local_best_val = sims_for_label[local_best].item()
+                if local_best_val > best_sim:
+                    best_sim = local_best_val
+                    global_idx = torch.nonzero(mask).squeeze(1)[local_best]
+                    ref_path = str(self.ref_abs_paths[global_idx.item()])
             predictions.append(
                 Prediction(
                     label=str(self.label_strings[label_idx.item()]),

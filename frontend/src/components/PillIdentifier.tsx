@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, useRef } from "react";
+import { useCallback, useState, useRef, useEffect } from "react";
 import ReactCrop, { type Crop, centerCrop, makeAspectCrop } from "react-image-crop";
 import "react-image-crop/dist/ReactCrop.css";
 
@@ -9,6 +9,74 @@ import {
   referenceImageSrc,
   type PredictionResult,
 } from "@/lib/api";
+
+/** Live in-app camera capture (getUserMedia), so users don't have to leave the
+ * app to take a photo in the OS camera and then re-select it from the gallery. */
+function LiveCameraCapture({
+  onCapture,
+  onClose,
+}: {
+  onCapture: (file: File) => void;
+  onClose: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    navigator.mediaDevices
+      .getUserMedia({ video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 1280 } } })
+      .then((s) => {
+        stream = s;
+        if (videoRef.current) videoRef.current.srcObject = s;
+      })
+      .catch(() => setError("Camera access denied or unavailable. Use \"Select Photo\" instead."));
+    return () => stream?.getTracks().forEach((t) => t.stop());
+  }, []);
+
+  const capture = () => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d")!.drawImage(video, 0, 0);
+    canvas.toBlob(
+      (blob) => {
+        if (blob) onCapture(new File([blob], "capture.jpg", { type: "image/jpeg" }));
+      },
+      "image/jpeg",
+      0.95
+    );
+  };
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-950 p-4 space-y-3">
+      {error ? (
+        <p className="text-xs text-red-400 text-center py-8">{error}</p>
+      ) : (
+        <video ref={videoRef} autoPlay playsInline muted className="w-full rounded-lg" />
+      )}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={capture}
+          disabled={!!error}
+          className="flex-1 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-700 text-white font-bold text-xs rounded-xl"
+        >
+          ✓ Capture
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex-1 px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white font-bold text-xs rounded-xl"
+        >
+          ✕ Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
 
 // ⚠️ UPDATE THIS WITH YOUR ACTUAL GOOGLE FORM URL
 const GOOGLE_FORM_URL = "https://docs.google.com/forms/d/e/.../viewform";
@@ -59,15 +127,29 @@ export function PillIdentifier() {
   const [copied, setCopied] = useState(false);
 
   const [rawResults, setRawResults] = useState<PredictionResult[] | null>(null);
+  const [lowConfidence, setLowConfidence] = useState(false);
+  const [ocrImprintRead, setOcrImprintRead] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [showCamera, setShowCamera] = useState(false);
+
+  // ── OPTIONAL BACK-SIDE CAPTURE ──
+  // Many pills carry different imprint/score-mark info on each face; capturing
+  // both lets the backend average embeddings across sides for a better match.
+  const [wantsBackSide, setWantsBackSide] = useState(false);
+  const [imgSrcBack, setImgSrcBack] = useState("");
+  const imgRefBack = useRef<HTMLImageElement | null>(null);
+  const [cropBack, setCropBack] = useState<Crop>();
+  const [completedCropBack, setCompletedCropBack] = useState<Crop | null>(null);
+  const [rotationBack, setRotationBack] = useState(0);
+  const [showCameraBack, setShowCameraBack] = useState(false);
 
   function onImageLoad(e: React.SyntheticEvent<HTMLImageElement>) {
     const { width, height } = e.currentTarget;
     // Pilot Intentional Friction Constraint: Small baseline canvas area boundary
     const initialCrop = centerCrop(
-      makeAspectCrop({ unit: "%", width: 40, aspect: 1 }, width, height),
+      makeAspectCrop({ unit: "%", width: 40 }, 1, width, height),
       width,
       height
     );
@@ -118,11 +200,12 @@ export function PillIdentifier() {
     }
   };
 
-  const getCroppedFile = (): Promise<File | null> => {
+  const cropToFile = (
+    image: HTMLImageElement,
+    crop: Crop,
+    rotationDeg: number
+  ): Promise<File | null> => {
     return new Promise((resolve) => {
-      if (!imgRef.current || !completedCrop) return resolve(null);
-      const image = imgRef.current;
-      
       // Use a smaller canvas for mobile
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d");
@@ -130,23 +213,23 @@ export function PillIdentifier() {
 
       const scaleX = image.naturalWidth / image.width;
       const scaleY = image.naturalHeight / image.height;
-      
-      const MAX_DIMENSION = 600; // Even safer for mobile
-      const scaleFactor = Math.min(1, MAX_DIMENSION / Math.max(completedCrop.width * scaleX, completedCrop.height * scaleY));
 
-      canvas.width = completedCrop.width * scaleX * scaleFactor;
-      canvas.height = completedCrop.height * scaleY * scaleFactor;
+      const MAX_DIMENSION = 600; // Even safer for mobile
+      const scaleFactor = Math.min(1, MAX_DIMENSION / Math.max(crop.width * scaleX, crop.height * scaleY));
+
+      canvas.width = crop.width * scaleX * scaleFactor;
+      canvas.height = crop.height * scaleY * scaleFactor;
 
       ctx.save();
       ctx.translate(canvas.width / 2, canvas.height / 2);
-      ctx.rotate((rotation * Math.PI) / 180);
-      
+      ctx.rotate((rotationDeg * Math.PI) / 180);
+
       ctx.drawImage(
         image,
-        completedCrop.x * scaleX,
-        completedCrop.y * scaleY,
-        completedCrop.width * scaleX,
-        completedCrop.height * scaleY,
+        crop.x * scaleX,
+        crop.y * scaleY,
+        crop.width * scaleX,
+        crop.height * scaleY,
         -canvas.width / 2,
         -canvas.height / 2,
         canvas.width,
@@ -161,22 +244,35 @@ export function PillIdentifier() {
     });
   };
 
+  const getCroppedFile = () =>
+    imgRef.current && completedCrop ? cropToFile(imgRef.current, completedCrop, rotation) : Promise.resolve(null);
+
+  const getCroppedBackFile = () =>
+    imgRefBack.current && completedCropBack
+      ? cropToFile(imgRefBack.current, completedCropBack, rotationBack)
+      : Promise.resolve(null);
+
   const onIdentify = useCallback(async () => {
     if (!imgRef.current || !completedCrop) {
       setError("Please frame the pill in the crop area first.");
       return;
     }
-        
+
     setLoading(true);
     setError(null);
     setRawResults(null);
-      
+    setLowConfidence(false);
+    setOcrImprintRead(null);
+
     try {
       const processedFile = await getCroppedFile();
       if (!processedFile) throw new Error("Could not process image. Please try again.");
+      const processedBackFile = wantsBackSide ? await getCroppedBackFile() : null;
 
-      const res = await predictPill(processedFile);
-      
+      const res = await predictPill(processedFile, processedBackFile);
+      setLowConfidence(res.low_confidence);
+      setOcrImprintRead(res.ocr_imprint_read);
+
       if (res.predictions && res.predictions.length > 0) {
         const predictions = [...res.predictions];
         
@@ -215,7 +311,7 @@ export function PillIdentifier() {
     } finally {
       setLoading(false);
     }
-  }, [completedCrop, rotation, rotationCount, cropAdjustmentCount, timeToInference]);
+  }, [completedCrop, rotation, rotationCount, cropAdjustmentCount, timeToInference, wantsBackSide, completedCropBack, rotationBack]);
     // Master Token Compilation Action Loop
   const handleCompileMasterToken = () => {
     if (studyBatchLogs.length === 0) return;
@@ -260,15 +356,31 @@ export function PillIdentifier() {
   the characters appear upright when you tilt your head to the right.
             </p>
             {!imgSrc ? (
-              <label
-                onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-                onDragLeave={() => setDragging(false)}
-                onDrop={onDrop}
-                className={`flex aspect-square cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-4 text-center bg-white transition-all hover:bg-slate-50 border-slate-300 ${dragging ? "border-sky-500 bg-sky-50" : ""}`}
-              >
-                <input type="file" accept="image/*" className="hidden" onChange={(e) => handleFileSelection(e.target.files?.[0] ?? null)} />
-                <p className="font-semibold text-slate-600 text-xs">👉 Tap Here to Select Photo 👈</p>
-              </label>
+              showCamera ? (
+                <LiveCameraCapture
+                  onCapture={(f) => { setShowCamera(false); handleFileSelection(f); }}
+                  onClose={() => setShowCamera(false)}
+                />
+              ) : (
+                <div className="space-y-2">
+                  <label
+                    onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+                    onDragLeave={() => setDragging(false)}
+                    onDrop={onDrop}
+                    className={`flex aspect-square cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-4 text-center bg-white transition-all hover:bg-slate-50 border-slate-300 ${dragging ? "border-sky-500 bg-sky-50" : ""}`}
+                  >
+                    <input type="file" accept="image/*" className="hidden" onChange={(e) => handleFileSelection(e.target.files?.[0] ?? null)} />
+                    <p className="font-semibold text-slate-600 text-xs">👉 Tap Here to Select Photo 👈</p>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowCamera(true)}
+                    className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-2.5"
+                  >
+                    📷 Take Photo Now (in-app camera)
+                  </button>
+                </div>
+              )
             ) : (
               // Inside your return block, under "Step 1"
                 <div className="rounded-2xl border border-slate-200 bg-slate-950 p-6 flex flex-col items-center"> 
@@ -295,6 +407,91 @@ export function PillIdentifier() {
               </div>
             )}
 
+            {imgSrc && (
+              <div className="mt-4">
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={wantsBackSide}
+                    onChange={(e) => setWantsBackSide(e.target.checked)}
+                  />
+                  Add a photo of the back of the pill too (recommended — imprints
+                  and score marks often differ per side and improve accuracy)
+                </label>
+
+                {wantsBackSide && (
+                  <div className="mt-3">
+                    {!imgSrcBack ? (
+                      showCameraBack ? (
+                        <LiveCameraCapture
+                          onCapture={(f) => {
+                            setShowCameraBack(false);
+                            const reader = new FileReader();
+                            reader.addEventListener("load", () => setImgSrcBack(reader.result?.toString() || ""));
+                            reader.readAsDataURL(f);
+                          }}
+                          onClose={() => setShowCameraBack(false)}
+                        />
+                      ) : (
+                        <div className="space-y-2">
+                          <label className="flex aspect-square cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed p-4 text-center bg-white hover:bg-slate-50 border-slate-300">
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                if (!f) return;
+                                const reader = new FileReader();
+                                reader.addEventListener("load", () => setImgSrcBack(reader.result?.toString() || ""));
+                                reader.readAsDataURL(f);
+                              }}
+                            />
+                            <p className="font-semibold text-slate-600 text-xs">👉 Select Back-Side Photo 👈</p>
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => setShowCameraBack(true)}
+                            className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-2.5"
+                          >
+                            📷 Take Photo Now (in-app camera)
+                          </button>
+                        </div>
+                      )
+                    ) : (
+                      <div className="rounded-2xl border border-slate-200 bg-slate-950 p-4 flex flex-col items-center">
+                        <div className="max-h-60 overflow-auto flex items-center justify-center">
+                          <ReactCrop crop={cropBack} onChange={setCropBack} onComplete={(c) => setCompletedCropBack(c)} aspect={1} keepSelection>
+                            <img
+                              ref={imgRefBack}
+                              alt="Back of pill"
+                              src={imgSrcBack}
+                              onLoad={(e) => {
+                                const { width, height } = e.currentTarget;
+                                const initial = centerCrop(makeAspectCrop({ unit: "%", width: 40 }, 1, width, height), width, height);
+                                setCropBack(initial);
+                                setCompletedCropBack(initial);
+                              }}
+                              style={{ transform: `rotate(${rotationBack}deg)` }}
+                              className="max-h-56 object-contain"
+                            />
+                          </ReactCrop>
+                        </div>
+                        <div className="mt-4 flex w-full justify-between items-center px-2">
+                          <button type="button" onClick={() => setRotationBack((r) => (r + 90) % 360)} className="text-xs font-bold rounded bg-slate-800 text-slate-200 hover:bg-slate-700 px-4 py-2">
+                            Turn 90°
+                          </button>
+                          <button type="button" onClick={() => setImgSrcBack("")} className="text-xs font-bold rounded bg-slate-800 text-rose-400 hover:bg-slate-700 px-4 py-2">
+                            Clear Image
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             <button
               onClick={onIdentify}
               disabled={!imgSrc || loading}
@@ -315,11 +512,29 @@ export function PillIdentifier() {
             {loading ? (
               <div className="h-24 animate-pulse rounded-2xl bg-slate-100" />
             ) : rawResults ? (
-              <ResultsPyramid 
-                results={rawResults} 
-                showAll={showAll} 
-                setShowAll={setShowAll} 
-              />
+              <>
+                {lowConfidence && (
+                  <div className="mb-3 rounded-2xl border-l-4 border-red-500 bg-red-50 p-4">
+                    <p className="text-sm font-semibold text-red-900">
+                      ⚠ Low confidence — none of these candidates strongly match the photo.
+                    </p>
+                    <p className="text-xs text-red-800 mt-1">
+                      Do not act on this result. Retake with better lighting/focus and a tighter
+                      crop, or confirm with a pharmacist and the physical packaging.
+                    </p>
+                  </div>
+                )}
+                {ocrImprintRead && (
+                  <p className="mb-2 text-[11px] text-slate-400">
+                    Imprint text read from photo: <span className="font-mono">{ocrImprintRead}</span>
+                  </p>
+                )}
+                <ResultsPyramid
+                  results={rawResults}
+                  showAll={showAll}
+                  setShowAll={setShowAll}
+                />
+              </>
             ) : (
               <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-400">
                 Awaiting specimen matrix context injection loop.

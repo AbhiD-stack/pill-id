@@ -34,6 +34,21 @@ class Settings(BaseSettings):
     # How many candidate matches to return per prediction.
     top_k: int = 10
 
+    # How many embedding-only candidates to pull before imprint re-ranking.
+    # Must be >= top_k; wider pool gives the re-ranker room to promote a
+    # correct-but-not-top-embedding-score candidate.
+    rerank_pool_size: int = 30
+
+    # Weight of the OCR imprint-match score in the final fused score. The
+    # fused score is: cosine_similarity + imprint_fusion_weight * imprint_score
+    # (imprint_score in [0, 1]), so this is roughly "how many points of cosine
+    # similarity a perfect imprint match is worth."
+    imprint_fusion_weight: float = 0.25
+
+    # Below this fused top-1 score, flag the response as low-confidence
+    # instead of presenting a guess as if it were reliable.
+    low_confidence_threshold: float = 0.45
+
     # Browser origins allowed to call the API (comma-separated in the env var).
     # Localhost for dev; add the Vercel URL when the frontend is deployed.
     cors_origins: list[str] = [

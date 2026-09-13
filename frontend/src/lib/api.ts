@@ -7,14 +7,25 @@ export type PredictionResult = {
   status: string | null;
   score: number;
   score_pct: number;
+  imprint_match_score?: number;
+  fused_score?: number;
   reference_image_url: string | null;
+};
+
+export type PredictResponse = {
+  predictions: PredictionResult[];
+  ocr_imprint_read: string | null;
+  low_confidence: boolean;
 };
 
 const apiBase = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
 
-export async function predictPill(file: File) {
+export async function predictPill(file: File, fileBack?: File | null): Promise<PredictResponse> {
   const formData = new FormData();
   formData.append("file", file);
+  if (fileBack) {
+    formData.append("file_back", fileBack);
+  }
 
   const response = await fetch(`${apiBase}/api/predict`, {
     method: "POST",
@@ -30,7 +41,7 @@ export async function predictPill(file: File) {
     throw new Error(text || `Prediction request failed with status ${response.status}`);
   }
 
-  return (await response.json()) as { predictions: PredictionResult[] };
+  return (await response.json()) as PredictResponse;
 }
 
 // 1. Keep this dead simple to construct the absolute path
@@ -75,6 +86,12 @@ export type PillMatch = {
   reference_image_url: string | null;
 };
 
+export type IdentifyResult = {
+  matches: PillMatch[];
+  lowConfidence: boolean;
+  ocrImprintRead: string | null;
+};
+
 export function canvasToFile(canvas: HTMLCanvasElement, quality = 0.9): Promise<File> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
@@ -91,12 +108,17 @@ export function canvasToFile(canvas: HTMLCanvasElement, quality = 0.9): Promise<
   });
 }
 
-export async function identifyPill(canvas: HTMLCanvasElement, topN = 5): Promise<PillMatch[]> {
+export async function identifyPill(
+  canvas: HTMLCanvasElement,
+  topN = 5,
+  backCanvas?: HTMLCanvasElement | null
+): Promise<IdentifyResult> {
   const file = await canvasToFile(canvas);
-  const { predictions } = await predictPill(file);
+  const fileBack = backCanvas ? await canvasToFile(backCanvas) : null;
+  const { predictions, low_confidence, ocr_imprint_read } = await predictPill(file, fileBack);
 
   const top = predictions.slice(0, topN);
-  return Promise.all(
+  const matches = await Promise.all(
     top.map(async (p) => ({
       label: p.label,
       ndc: p.ndc,
@@ -107,4 +129,5 @@ export async function identifyPill(canvas: HTMLCanvasElement, topN = 5): Promise
         : null,
     }))
   );
+  return { matches, lowConfidence: low_confidence, ocrImprintRead: ocr_imprint_read };
 }
