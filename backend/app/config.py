@@ -43,11 +43,16 @@ class Settings(BaseSettings):
     label_meta_path: Path = Path(__file__).resolve().parent / "data" / "label_meta.json"
 
     # The ePillID dataset zip used to display matched reference pill images.
-    # Only covers ePillID-sourced matches -- the new gallery's DailyMed/C3PI/etc.
-    # images aren't in here, so most matches simply won't have a thumbnail yet
-    # (reference_images.py already degrades gracefully: ref_url comes back None,
-    # not an error). Known gap, not a beta blocker.
+    # Only covers ePillID-sourced matches (~3% of the gallery) -- checked as
+    # a fallback after thumbnails_dir below, which covers the much larger
+    # DailyMed-sourced slice of the priority tier.
     dataset_zip_path: Path = REPO_ROOT / "ePillID_data.zip"
+
+    # label -> {label}.jpg, one representative thumbnail per label (built by
+    # scripts/collect_thumbnails.py from the DailyMed acquisition output,
+    # covering priority-tier labels -- the ones restricted search actually
+    # returns). Checked before falling back to dataset_zip_path above.
+    thumbnails_dir: Path = Path(__file__).resolve().parent / "data" / "thumbnails"
 
     # "auto" -> cuda if available, else mps (Apple Silicon), else cpu.
     # Override with "cpu" / "mps" / "cuda" if needed.

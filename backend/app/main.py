@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import time
 import uuid
 import zipfile
@@ -111,6 +112,22 @@ def health():
     }
 
 
+def _resolve_thumbnail_url(label: str, ref_path: str | None, ref_store: ReferenceImageStore | None) -> str | None:
+    """Prefer the label-keyed thumbnails/ folder (scripts/collect_thumbnails.py,
+    built from the DailyMed acquisition output -- covers ~91% of priority-tier
+    labels) and fall back to the old ePillID-zip-only path matching (covers
+    the much smaller ePillID-sourced slice of the gallery, keyed to the exact
+    winning reference image rather than the label)."""
+    settings = get_settings()
+    if (settings.thumbnails_dir / f"{label}.jpg").exists():
+        return f"/api/thumbnail?label={quote(label)}"
+    if ref_store is not None and ref_path is not None:
+        zip_path = map_to_zip_path(ref_path)
+        if ref_store.has(zip_path):
+            return f"/api/reference-image?path={quote(zip_path)}"
+    return None
+
+
 async def _read_image(file: UploadFile) -> Image.Image:
     raw = await file.read()
     if not raw:
@@ -181,11 +198,7 @@ async def predict(
 
     results = []
     for p, info, match, fused_score in fused:
-        ref_url = None
-        if ref_store is not None:
-            zip_path = map_to_zip_path(p.ref_path)
-            if ref_store.has(zip_path):
-                ref_url = f"/api/reference-image?path={quote(zip_path)}"
+        ref_url = _resolve_thumbnail_url(p.label, p.ref_path, ref_store)
         results.append(
             {
                 "label": p.label,
@@ -292,15 +305,31 @@ def reference_image(path: str = Query(..., description="Zip member path under eP
         headers={"Cache-Control": "public, max-age=86400"},
     )
 
+
+_LABEL_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+@app.get("/api/thumbnail")
+def thumbnail(label: str = Query(..., description="Pill label (NDC9-style)")):
+    """Serves from thumbnails_dir/{label}.jpg -- see _resolve_thumbnail_url
+    and scripts/collect_thumbnails.py."""
+    if not _LABEL_RE.match(label):
+        raise HTTPException(status_code=400, detail="Invalid label.")
+    settings = get_settings()
+    path = settings.thumbnails_dir / f"{label}.jpg"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Thumbnail not found.")
+    return Response(
+        content=path.read_bytes(),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
 def _build_search_result(label: str, info: dict) -> dict:
     clf: DinoV2PillClassifier = state["classifier"]
     ref_store: ReferenceImageStore | None = state["ref_store"]
-    ref_url = None
     ref_path = clf.ref_path_for_label(label)
-    if ref_path and ref_store is not None:
-        zip_path = map_to_zip_path(ref_path)
-        if ref_store.has(zip_path):
-            ref_url = f"/api/reference-image?path={quote(zip_path)}"
+    ref_url = _resolve_thumbnail_url(label, ref_path, ref_store)
     return {
         "label": label,
         "ndc": label,

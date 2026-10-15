@@ -224,3 +224,7 @@ backend/node_modules/
 # the Next.js frontend's lib directory — un-ignore it explicitly.
 !frontend/lib/
 !frontend/src/lib/
+
+# Reference-image thumbnails built locally by scripts/collect_thumbnails.py
+# (~1.2GB) -- local-only, never committed. See that script's docstring.
+backend/app/data/thumbnails/
