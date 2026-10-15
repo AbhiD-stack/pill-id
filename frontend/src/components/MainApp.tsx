@@ -376,7 +376,7 @@ export default function MainApp({ onResetSession }: MainAppProps) {
           className={`flex flex-col items-center flex-1 py-1.5 transition ${activeTab === "export" ? "text-blue-600 font-semibold" : "text-slate-500 hover:text-slate-800"}`}
         >
           <span className="text-xl">📤</span>
-          <span className="text-[11px] mt-0.5">Export</span>
+          <span className="text-[11px] mt-0.5">Survey</span>
         </button>
       </nav>
     </div>
