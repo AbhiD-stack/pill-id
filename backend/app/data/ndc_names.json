@@ -296,20 +296,20 @@
 "shape": null
 },
 "00006-0575-61": {
-"color": null,
-"imprint": null,
-"name": "sitagliptin",
-"rx_or_otc": null,
+"color": "light pink",
+"imprint": "575",
+"name": "sitagliptin / metformin [Janumet 50mg/500mg]",
+"rx_or_otc": "RX",
 "score_marks": null,
-"shape": null
+"shape": "OVAL"
 },
 "00006-0577-61": {
-"color": null,
-"imprint": null,
-"name": "sitagliptin",
-"rx_or_otc": null,
+"color": "red",
+"imprint": "577",
+"name": "sitagliptin / metformin [Janumet 50mg/1000mg]",
+"rx_or_otc": "RX",
 "score_marks": null,
-"shape": null
+"shape": "OVAL"
 },
 "00006-0717": {
 "color": null,
