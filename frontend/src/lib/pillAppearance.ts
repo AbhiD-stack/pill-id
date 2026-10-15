@@ -34,10 +34,38 @@ export const COLOR_OPTIONS: { label: string; swatch: string }[] = [
   { label: "GRAY", swatch: "#9ca3af" },
 ];
 
-// Raw values in the data are just digit counts ("1".."4") with no
-// documented visual convention we could confirm -- labeled plainly rather
-// than guessing what each count looks like on a real tablet.
+// Raw values follow the standard DailyMed/SPL "splscore" convention: the
+// number of pieces the tablet is scored to break into (1 = whole/not
+// scored, 2 = one score line, 3 = two score lines, 4 = cross-scored).
 export const SCORE_MARK_OPTIONS = ["1", "2", "3", "4"] as const;
+
+export const SCORE_MARK_LABELS: Record<string, string> = {
+  "1": "Not scored",
+  "2": "1 score line",
+  "3": "2 score lines",
+  "4": "Cross-scored",
+};
+
+// Line segments (as [x1,y1,x2,y2], on a 24x24 pill outline) to draw over
+// the pill for each score-mark count.
+export function scoreMarkLines(value: string): [number, number, number, number][] {
+  switch (value) {
+    case "2":
+      return [[12, 4, 12, 20]];
+    case "3":
+      return [
+        [8, 4, 8, 20],
+        [16, 4, 16, 20],
+      ];
+    case "4":
+      return [
+        [12, 4, 12, 20],
+        [4, 12, 20, 12],
+      ];
+    default:
+      return [];
+  }
+}
 
 // Simple geometric SVG for each shape -- recognizable, not photorealistic.
 export function shapeIconPath(shape: string): { kind: "polygon" | "ellipse" | "path"; d: string } {

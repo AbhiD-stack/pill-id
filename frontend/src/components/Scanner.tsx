@@ -5,6 +5,7 @@ import { useState } from "react";
 import { identifyPill, submitFeedback, type PillMatch, type RxOrOtc } from "@/lib/api";
 import { addLogEntry, addScheduleEntry, addReferencePill, checkCompliance, getRecentDrugNames, TimeOfDay } from "@/lib/db";
 import { fullSafetyCheck } from "@/lib/safety";
+import { accuracyDisclaimer } from "@/lib/modelAccuracy";
 import { speak, vibrate } from "./AudioAlert";
 import { logTelemetry } from "@/lib/telemetry";
 import ImageCapture from "./ImageCapture";
@@ -214,6 +215,7 @@ export default function Scanner() {
           previewUrl={previewUrl}
           predictionId={predictionId}
           searchMode={searchMode}
+          rxOrOtc={rxOrOtc}
           onDrop={scheduleDrop}
           onSaveReference={saveAsReference}
           onRetake={resetScanner}
@@ -232,6 +234,7 @@ function ResultsView({
   previewUrl,
   predictionId,
   searchMode,
+  rxOrOtc,
   onDrop,
   onSaveReference,
   onRetake,
@@ -244,6 +247,7 @@ function ResultsView({
   previewUrl: string | null;
   predictionId: string | null;
   searchMode: "restricted" | "unrestricted" | null;
+  rxOrOtc: RxOrOtc;
   onDrop: (match: PillMatch, bucket: TimeOfDay) => void;
   onSaveReference: (match: PillMatch) => void;
   onRetake: () => void;
@@ -279,10 +283,17 @@ function ResultsView({
 
   return (
     <div className="space-y-6 max-w-3xl mx-auto pb-12">
+      {/* Always shown, not conditional on the match score -- the eval's own
+          calibration curve is nearly flat (a 95% score is not meaningfully
+          more trustworthy than a 40% one), so a score-gated warning alone
+          would miss exactly the high-score-but-wrong case this is for. */}
+      <div className="bg-amber-50 border-l-4 border-amber-500 rounded-r-xl p-4 shadow-sm">
+        <p className="text-xs text-amber-900">{accuracyDisclaimer(rxOrOtc)}</p>
+      </div>
       {lowConfidence && (
         <div className="bg-red-50 border-l-4 border-red-500 rounded-r-xl p-4 shadow-sm">
           <p className="text-sm text-red-900 font-semibold">
-            ⚠ Low confidence match — none of these candidates strongly match the photo.
+            ⚠ Weak visual match — none of these candidates closely match the photo.
           </p>
           <p className="text-xs text-red-800 mt-1">
             Do not act on this result. Retake with better lighting/focus, or confirm with a
@@ -437,7 +448,7 @@ function ResultsView({
                       {[m.imprint && `Imprint: ${m.imprint}`, m.color, m.shape].filter(Boolean).join(" · ")}
                     </p>
                   )}
-                  <p className="text-xs font-bold text-emerald-600 mt-0.5">{(m.score * 100).toFixed(0)}% confidence</p>
+                  <p className="text-xs font-bold text-emerald-600 mt-0.5">{(m.score * 100).toFixed(0)}% visual match</p>
                 </div>
               </div>
 
@@ -446,7 +457,7 @@ function ResultsView({
                   💊 Drag Box
                 </div>
                 <button
-                  onClick={() => speak(`${m.drug_name || m.label}, confidence ${(m.score * 100).toFixed(0)} percent`)}
+                  onClick={() => speak(`${m.drug_name || m.label}, visual match ${(m.score * 100).toFixed(0)} percent`)}
                   className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
                   title="Read Aloud"
                 >
@@ -478,11 +489,11 @@ function ResultsView({
           onClick={() => setShowAppearanceSearch((v) => !v)}
           className="w-full text-center text-sm font-semibold text-indigo-600"
         >
-          {showAppearanceSearch ? "▲ Hide" : "▼ Don't see your pill? Search by name or appearance instead"}
+          {showAppearanceSearch ? "▲ Hide" : "▼ Don't see your pill? Describe its appearance instead"}
         </button>
         {showAppearanceSearch && (
           <div className="mt-4">
-            <PillSearchPanel compact />
+            <PillSearchPanel compact allowNameSearch={false} />
           </div>
         )}
       </div>

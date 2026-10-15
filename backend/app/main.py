@@ -38,6 +38,30 @@ state: dict = {"classifier": None, "ref_store": None, "drug_names": None}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+
+    # `pip install pytesseract` only installs the Python wrapper -- the
+    # actual Tesseract OCR engine is a separate program that has to be
+    # installed on the host. read_imprint_text() catches every exception and
+    # returns None (deliberately, so a missing/broken OCR install degrades
+    # to embedding-only scoring instead of crashing predictions), which
+    # means this failure mode is otherwise completely silent: the imprint
+    # re-ranking signal just never fires, with nothing in the logs to say
+    # why. Check it explicitly at startup instead.
+    try:
+        import pytesseract
+        version = pytesseract.get_tesseract_version()
+        print(f"[startup] Tesseract OCR engine found (version {version}) -- imprint re-ranking is active.")
+    except Exception as e:
+        print(
+            "[startup] WARNING: Tesseract OCR engine not found or not working "
+            f"({e!r}). Imprint-text matching will silently do nothing -- "
+            "predictions fall back to pure visual-embedding similarity, which "
+            "cannot distinguish same-shape/color pills that differ only in "
+            "imprint text. On Windows: install from "
+            "https://github.com/UB-Mannheim/tesseract/wiki and make sure "
+            "tesseract.exe is on PATH (or set pytesseract.pytesseract.tesseract_cmd)."
+        )
+
     print("[startup] Loading model... (first run downloads the DINOv2 backbone)")
     state["classifier"] = DinoV2PillClassifier(
         model_dir=settings.model_artifacts_dir,

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { searchByName, searchByAppearance, type SearchResult } from "@/lib/api";
-import { SHAPE_OPTIONS, COLOR_OPTIONS, SCORE_MARK_OPTIONS, shapeIconPath } from "@/lib/pillAppearance";
+import { SHAPE_OPTIONS, COLOR_OPTIONS, SCORE_MARK_OPTIONS, SCORE_MARK_LABELS, shapeIconPath, scoreMarkLines } from "@/lib/pillAppearance";
 
 type Mode = "name" | "appearance";
 
@@ -26,14 +26,18 @@ function ShapeIcon({ shape, size = 28 }: { shape: string; size?: number }) {
 
 export default function PillSearchPanel({
   defaultMode = "name",
-  showModeToggle = true,
+  allowNameSearch = true,
   compact = false,
 }: {
   defaultMode?: Mode;
-  showModeToggle?: boolean;
+  /** Scanner's "don't see your pill?" fallback only offers appearance
+      search -- name search belongs to the standalone Lookup tab, not the
+      photo-match flow (if you already know the name, you don't need the
+      scanner to begin with). */
+  allowNameSearch?: boolean;
   compact?: boolean;
 }) {
-  const [mode, setMode] = useState<Mode>(defaultMode);
+  const [mode, setMode] = useState<Mode>(allowNameSearch ? defaultMode : "appearance");
   const [nameQuery, setNameQuery] = useState("");
   const [color, setColor] = useState<string | null>(null);
   const [shape, setShape] = useState<string | null>(null);
@@ -89,7 +93,7 @@ export default function PillSearchPanel({
 
   return (
     <div className="space-y-4">
-      {showModeToggle && (
+      {allowNameSearch && (
         <div className="flex gap-2">
           <button
             onClick={() => { setMode("name"); setResults(null); }}
@@ -178,9 +182,9 @@ export default function PillSearchPanel({
             </div>
           </div>
 
-          {/* Score marks -- a pill can be scored differently on each use
-              case, so this is just the count of score lines reported in the
-              reference data, not an interpretation of what they look like. */}
+          {/* Score marks -- shown as diagrams of the break-lines on the
+              pill, following the standard DailyMed scoring convention
+              (1 = whole, 2 = one line, 3 = two lines, 4 = cross-scored). */}
           <div>
             <p className="text-xs font-semibold text-slate-600 mb-1.5">Score marks</p>
             <div className="flex flex-wrap gap-2">
@@ -189,13 +193,20 @@ export default function PillSearchPanel({
                   key={s}
                   type="button"
                   onClick={() => setScoreMarks(scoreMarks === s ? null : s)}
-                  className={`px-3 py-2 rounded-xl border text-xs font-semibold transition ${
+                  title={SCORE_MARK_LABELS[s]}
+                  className={`flex flex-col items-center gap-0.5 px-2.5 py-2 rounded-xl border text-[9px] font-medium transition ${
                     scoreMarks === s
                       ? "bg-indigo-600 border-indigo-600 text-white"
                       : "bg-white border-slate-200 text-slate-600 hover:border-indigo-300"
                   }`}
                 >
-                  {s}
+                  <svg width={28} height={28} viewBox="0 0 24 24" className="shrink-0">
+                    <ellipse cx={12} cy={12} rx={9} ry={9} fill="none" stroke="currentColor" strokeWidth={1.5} />
+                    {scoreMarkLines(s).map(([x1, y1, x2, y2], i) => (
+                      <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="currentColor" strokeWidth={1.5} />
+                    ))}
+                  </svg>
+                  <span className="text-center leading-tight">{SCORE_MARK_LABELS[s]}</span>
                 </button>
               ))}
             </div>
