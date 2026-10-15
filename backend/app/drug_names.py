@@ -4,9 +4,19 @@ Loads the precomputed table built by scripts/build_ndc_names.py (sourced from
 the NIH RxNav API). Lookup is offline and instant; if the table is missing or an
 NDC isn't found, callers fall back to showing the raw NDC code.
 
-The lookup key is the NDC parsed from the *reference image filename* (every
-predicted class has one), which is more reliable than the model's class label —
-many labels are opaque hashes while the image filenames carry real NDC codes.
+Two lookup keys are supported:
+  - lookup_by_label(label): the model's own predicted class label. Since the
+    pill-scanner rebuild's visual-pooling fix, this label is already the
+    canonical representative NDC9 for a merged group of NDCs that are the
+    same physical pill (same imprint+color) -- it's the right key for the
+    new, DailyMed-sourced ndc_names.json table, and the preferred lookup now.
+  - lookup(ref_path) / ndc_from_ref_path(ref_path): parses an NDC out of the
+    *reference image filename* instead. This was the ONLY option, and the
+    correct one, for the old ePillID-only system where label == raw NDC
+    exactly. It's kept as a fallback for older tables/checkpoints, but is
+    NOT reliable across the new gallery's multiple source datasets (DailyMed,
+    C3PI, phvitamins_v2, etc. each name files differently) -- prefer
+    lookup_by_label whenever the predicted label is available (it always is).
 """
 from __future__ import annotations
 
@@ -51,6 +61,10 @@ class DrugNameLookup:
 
     def lookup(self, ref_path: str) -> Optional[DrugInfo]:
         return self._table.get(ndc_from_ref_path(ref_path))
+
+    def lookup_by_label(self, label: str) -> Optional[DrugInfo]:
+        """Preferred lookup for the new gallery -- see module docstring."""
+        return self._table.get(label)
 
     @property
     def size(self) -> int:

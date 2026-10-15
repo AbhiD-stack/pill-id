@@ -10,10 +10,13 @@ The model is loaded once at startup and kept warm in memory.
 from __future__ import annotations
 
 import io
+import json
+import time
+import uuid
 from contextlib import asynccontextmanager
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile, Response
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
@@ -36,10 +39,22 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     print("[startup] Loading model... (first run downloads the DINOv2 backbone)")
     state["classifier"] = DinoV2PillClassifier(
-        model_dir=settings.model_artifacts_dir, device=settings.device
+        model_dir=settings.model_artifacts_dir,
+        device=settings.device,
+        lora_adapter_dir=settings.lora_adapter_dir,
+        label_meta_path=settings.label_meta_path,
     )
-    state["ref_store"] = ReferenceImageStore(settings.dataset_zip_path)
+    try:
+        state["ref_store"] = ReferenceImageStore(settings.dataset_zip_path)
+    except FileNotFoundError:
+        # The new gallery's reference images mostly live outside the old
+        # ePillID-only zip (DailyMed/C3PI/etc. sources) -- missing this zip
+        # just means thumbnails are unavailable, not that serving is broken.
+        print(f"[startup] No reference-image zip at {settings.dataset_zip_path} -- "
+              "predictions will omit thumbnails.")
+        state["ref_store"] = None
     state["drug_names"] = DrugNameLookup()
+    settings.feedback_dir.mkdir(parents=True, exist_ok=True)
     print("[startup] Ready.")
     yield
     if state["ref_store"] is not None:
@@ -87,6 +102,7 @@ async def predict(
     response: Response,
     file: UploadFile = File(None),
     file_back: UploadFile = File(None),
+    rx_or_otc: str | None = Form(None),  # "RX" | "OTC" | None/omitted == "don't know"
 ):  # file = front/primary side (required); file_back = optional reverse side.
     # Set the bypass cookie to destroy the localtunnel landing wall permanently
     response.set_cookie(key="bypass-tunnel-reminder", value="true", path="/")
@@ -102,15 +118,19 @@ async def predict(
     back_image = await _read_image(file_back) if file_back is not None else None
 
     settings = get_settings()
-    ref_store: ReferenceImageStore = state["ref_store"]
+    ref_store: ReferenceImageStore | None = state["ref_store"]
     drug_names: DrugNameLookup = state["drug_names"]
 
     # Pull a wider embedding-only pool (averaged across front+back when both
     # are provided), then re-rank it with the OCR imprint signal so a
     # candidate with a matching imprint but slightly lower raw visual
-    # similarity can still surface in the final top_k.
+    # similarity can still surface in the final top_k. rx_or_otc restricts
+    # the pool to that category's priority-tier labels (the "ask RX/OTC/
+    # don't know" app mode the training gate's 93-98% numbers were measured
+    # against) -- omitted/unrecognized falls back to the full unrestricted
+    # gallery (~89.5% top10), which is always available.
     images = [image, back_image] if back_image is not None else [image]
-    pool = clf.predict_topk_multi(images, k=settings.rerank_pool_size)
+    pool = clf.predict_topk_multi(images, k=settings.rerank_pool_size, rx_or_otc=rx_or_otc)
 
     # Try OCR on both sides and pool the tokens; imprint codes are often split
     # across the front and back faces (e.g. maker mark on one, strength on
@@ -120,7 +140,13 @@ async def predict(
 
     fused = []
     for p in pool:
-        info = drug_names.lookup(p.ref_path)
+        # Prefer lookup by the model's own predicted label -- it's already
+        # the canonical pooled identifier for the new gallery, and reliable
+        # across every source dataset (filename-based lookup below is not;
+        # see drug_names.py). Fall back to the old filename-derived NDC only
+        # if the new table has no entry for this label (e.g. an older
+        # checkpoint/table pairing).
+        info = drug_names.lookup_by_label(p.label) or drug_names.lookup(p.ref_path)
         candidate_imprint = info.get("imprint") if info else None
         match = score_imprint_match(ocr_text, candidate_imprint)
         fused.append((p, info, match, p.score + settings.imprint_fusion_weight * match.score))
@@ -129,12 +155,11 @@ async def predict(
 
     results = []
     for p, info, match, fused_score in fused:
-        zip_path = map_to_zip_path(p.ref_path)
-        ref_url = (
-            f"/api/reference-image?path={quote(zip_path)}"
-            if ref_store.has(zip_path)
-            else None
-        )
+        ref_url = None
+        if ref_store is not None:
+            zip_path = map_to_zip_path(p.ref_path)
+            if ref_store.has(zip_path):
+                ref_url = f"/api/reference-image?path={quote(zip_path)}"
         results.append(
             {
                 "label": p.label,
@@ -152,11 +177,68 @@ async def predict(
         )
 
     top_fused_score = results[0]["fused_score"] if results else 0.0
+    prediction_id = uuid.uuid4().hex
+    state.setdefault("_recent_predictions", {})[prediction_id] = {
+        "image_bytes": None,  # filled in below, kept out of the JSON response
+    }
+    # Stash the raw bytes briefly so /api/feedback can save the actual photo
+    # without the client re-uploading it. Small in-memory cache, not a queue --
+    # fine for beta traffic volumes; revisit if this becomes a real bottleneck.
+    file.file.seek(0)
+    state["_recent_predictions"][prediction_id]["image_bytes"] = await file.read()
+    _prune_recent_predictions()
+
     return {
+        "prediction_id": prediction_id,
         "predictions": results,
         "ocr_imprint_read": ocr_text,
         "low_confidence": top_fused_score < settings.low_confidence_threshold,
+        "search_mode": "restricted" if clf.has_restricted_mode(rx_or_otc) else "unrestricted",
     }
+
+
+_RECENT_PREDICTIONS_MAX = 200
+
+
+def _prune_recent_predictions():
+    cache = state.get("_recent_predictions", {})
+    if len(cache) > _RECENT_PREDICTIONS_MAX:
+        for key in list(cache.keys())[: len(cache) - _RECENT_PREDICTIONS_MAX]:
+            cache.pop(key, None)
+
+
+@app.post("/api/feedback")
+async def feedback(
+    prediction_id: str = Form(...),
+    correct: bool = Form(...),
+    reported_label: str | None = Form(None),  # optional: what the user says it actually is
+    notes: str | None = Form(None),
+):
+    """'None of these were right' (and 'this one was right') feedback, tied to
+    the actual photo. This is the beta's only source of real consumer-domain
+    (phone-photo) data -- the training gate has never had any (every number
+    so far comes from the same curated-source distribution as training; see
+    GATE INCONCLUSIVE in pill-scanner's eval/evaluate.py). Not wired into
+    retraining automatically; just accumulates on disk for a future labeling
+    + gate-validation pass."""
+    cache = state.get("_recent_predictions", {})
+    entry = cache.get(prediction_id)
+    if entry is None or entry.get("image_bytes") is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired prediction_id.")
+
+    settings = get_settings()
+    record_id = f"{int(time.time())}_{prediction_id}"
+    image_path = settings.feedback_dir / f"{record_id}.jpg"
+    meta_path = settings.feedback_dir / f"{record_id}.json"
+    image_path.write_bytes(entry["image_bytes"])
+    meta_path.write_text(json.dumps({
+        "prediction_id": prediction_id,
+        "correct": correct,
+        "reported_label": reported_label,
+        "notes": notes,
+        "timestamp": time.time(),
+    }, indent=2))
+    return {"status": "recorded"}
 
 @app.get("/api/reference-image")
 def reference_image(path: str = Query(..., description="Zip member path under ePillID_data/")):

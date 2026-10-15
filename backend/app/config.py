@@ -5,6 +5,7 @@ code runs unchanged on a laptop and on the EC2 host. See .env.example.
 """
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -24,7 +25,28 @@ class Settings(BaseSettings):
     # Where config.json + the dinov2_projection_head/ folder live.
     model_artifacts_dir: Path = REPO_ROOT
 
+    # LoRA adapter directory (dinov2_projection_head/lora_adapter), saved by the
+    # pill-scanner training run's finetune_with_lora phase. The reference
+    # gallery embeddings (deployed_ref_embeddings.pt) were computed AFTER this
+    # adapter was applied to the backbone, so serving must apply the same
+    # adapter before embedding a query image -- otherwise query and gallery
+    # embeddings come from two different backbones and similarity scores are
+    # silently wrong. None = no adapter (frozen base backbone only, matching
+    # the old pre-LoRA checkpoints).
+    lora_adapter_dir: Optional[Path] = None
+
+    # label -> {"category": "RX"|"OTC"|"unknown", "tier": "priority"|"long_tail"|"unknown"}.
+    # Built from the training run's image_manifest.csv (scripts/build_label_metadata.py).
+    # Required for the restricted-gallery search mode (ask RX/OTC/don't know),
+    # which is what the training gate's actual headline numbers (93-98% vs the
+    # 89.5% unrestricted figure) are measured against.
+    label_meta_path: Path = Path(__file__).resolve().parent / "data" / "label_meta.json"
+
     # The ePillID dataset zip used to display matched reference pill images.
+    # Only covers ePillID-sourced matches -- the new gallery's DailyMed/C3PI/etc.
+    # images aren't in here, so most matches simply won't have a thumbnail yet
+    # (reference_images.py already degrades gracefully: ref_url comes back None,
+    # not an error). Known gap, not a beta blocker.
     dataset_zip_path: Path = REPO_ROOT / "ePillID_data.zip"
 
     # "auto" -> cuda if available, else mps (Apple Silicon), else cpu.
@@ -55,6 +77,13 @@ class Settings(BaseSettings):
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ]
+
+    # Where "none of these are right" feedback (photo + context) gets written.
+    # This is the beta's only source of real consumer-domain (phone-photo)
+    # data -- the training gate has never had any (see eval/evaluate.py's
+    # GATE INCONCLUSIVE message in pill-scanner). Not wired into training
+    # automatically; just accumulates for a future labeling pass.
+    feedback_dir: Path = REPO_ROOT / "feedback"
 
 
 @lru_cache

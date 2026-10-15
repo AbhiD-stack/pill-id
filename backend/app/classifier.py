@@ -68,7 +68,8 @@ class ProjectionHead(nn.Module):
 
 
 class DinoV2PillClassifier:
-    def __init__(self, model_dir: Path, device: str = "auto"):
+    def __init__(self, model_dir: Path, device: str = "auto", lora_adapter_dir: Optional[Path] = None,
+                 label_meta_path: Optional[Path] = None):
         self.device = _resolve_device(device)
         print(f"[classifier] Using device: {self.device}")
 
@@ -83,9 +84,37 @@ class DinoV2PillClassifier:
         # Frozen DINOv2 backbone (weights downloaded from HuggingFace on first run).
         self.processor = AutoImageProcessor.from_pretrained(cfg["dinov2_model_id"])
         self.dinov2_model = AutoModel.from_pretrained(cfg["dinov2_model_id"])
-        self.dinov2_model.eval().to(self.device)
         for param in self.dinov2_model.parameters():
             param.requires_grad = False
+
+        # The reference gallery (deployed_ref_embeddings.pt) was computed AFTER
+        # the training run's LoRA fine-tune phase, i.e. through a backbone with
+        # this adapter applied -- not the plain base model. Serving must apply
+        # the same adapter before embedding a query image, or query and
+        # gallery embeddings come from two different backbones and every
+        # cosine-similarity score is silently wrong (not an error -- it just
+        # quietly returns worse/wrong matches with no indication anything is
+        # off). get_peft_model() always zero-inits a fresh adapter, so this
+        # must use PeftModel.from_pretrained to load the actual saved weights.
+        if lora_adapter_dir is not None and Path(lora_adapter_dir).exists():
+            from peft import PeftModel
+            self.dinov2_model = PeftModel.from_pretrained(self.dinov2_model, str(lora_adapter_dir))
+            print(f"[classifier] Applied LoRA adapter from {lora_adapter_dir}")
+        else:
+            print("[classifier] No LoRA adapter configured -- using the base DINOv2 backbone as-is. "
+                  "This is WRONG if the attached checkpoint was trained with run_lora=true "
+                  "(check config.json) -- query/gallery embeddings would come from different "
+                  "backbones.")
+        self.dinov2_model.eval().to(self.device)
+
+        self.label_meta: dict[str, dict] = {}
+        if label_meta_path is not None and Path(label_meta_path).exists():
+            with open(label_meta_path) as f:
+                self.label_meta = json.load(f)
+            print(f"[classifier] Loaded label metadata (category/tier) for {len(self.label_meta)} labels.")
+        else:
+            print("[classifier] No label_meta.json found -- restricted-gallery search (RX/OTC) "
+                  "unavailable; predict_topk will search the full unrestricted gallery only.")
 
         self.projection_head = ProjectionHead(
             in_dim=ckpt["in_dim"],
@@ -111,6 +140,29 @@ class DinoV2PillClassifier:
             f"across {self.num_reference_pills} pill classes."
         )
 
+        # Precomputed priority-tier+category masks for restricted-gallery
+        # search ("ask RX/OTC/don't know" app mode). This is the search mode
+        # the training gate's actual headline numbers were measured against
+        # (93-98% top10) -- the unrestricted full-gallery search below is a
+        # strictly harder, lower-accuracy fallback (measured ~89.5% top10),
+        # used only when the caller doesn't supply rx_or_otc or no
+        # label_meta.json was loaded.
+        self._restricted_masks: dict[str, torch.Tensor] = {}
+        if self.label_meta:
+            for cat in ("RX", "OTC"):
+                mask = torch.tensor(
+                    [
+                        self.label_meta.get(str(lbl), {}).get("category") == cat
+                        and self.label_meta.get(str(lbl), {}).get("tier") == "priority"
+                        for lbl in self.label_strings
+                    ],
+                    dtype=torch.bool, device=self.device,
+                )
+                if mask.any():
+                    self._restricted_masks[cat] = mask
+                    print(f"[classifier] Restricted-gallery mask for {cat}: "
+                          f"{int(mask.sum())} priority-tier labels.")
+
     @torch.no_grad()
     def _embed(self, image: Image.Image) -> torch.Tensor:
         inputs = self.processor(images=image, return_tensors="pt")
@@ -125,8 +177,12 @@ class DinoV2PillClassifier:
         return F.normalize(emb, dim=1)
 
     @torch.no_grad()
-    def _best_per_label(self, image: Image.Image) -> tuple[torch.Tensor, torch.Tensor]:
-        """Returns (scores_by_label, similarities) for a single query image."""
+    def _best_per_label(self, image: Image.Image, label_mask: Optional[torch.Tensor] = None
+                         ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Returns (scores_by_label, similarities) for a single query image.
+        label_mask (True = included), when given, excludes everything else by
+        forcing it to -inf -- same effect as not having those labels in the
+        gallery, without needing a second copy of ref_embeddings per mode."""
         query_emb = self._embed(image)
         similarities = (query_emb @ self.ref_embeddings.T).squeeze(0)
         scores_by_label = torch.full(
@@ -135,23 +191,40 @@ class DinoV2PillClassifier:
         scores_by_label.scatter_reduce_(
             0, self.ref_label_indices, similarities, reduce="amax", include_self=True
         )
+        if label_mask is not None:
+            scores_by_label = scores_by_label.masked_fill(~label_mask, -torch.inf)
         return scores_by_label, similarities
 
-    @torch.no_grad()
-    def predict_topk(self, image: Image.Image, k: int = 10) -> List[Prediction]:
-        return self.predict_topk_multi([image], k=k)
+    def has_restricted_mode(self, rx_or_otc: Optional[str]) -> bool:
+        """Whether predict_topk(_multi) will actually restrict the gallery
+        for this value, vs. silently falling back to the unrestricted
+        search. Lets callers report which mode a response actually used."""
+        return bool(rx_or_otc) and rx_or_otc in self._restricted_masks
 
     @torch.no_grad()
-    def predict_topk_multi(self, images: List[Image.Image], k: int = 10) -> List[Prediction]:
+    def predict_topk(self, image: Image.Image, k: int = 10, rx_or_otc: Optional[str] = None) -> List[Prediction]:
+        return self.predict_topk_multi([image], k=k, rx_or_otc=rx_or_otc)
+
+    @torch.no_grad()
+    def predict_topk_multi(self, images: List[Image.Image], k: int = 10,
+                            rx_or_otc: Optional[str] = None) -> List[Prediction]:
         """Front/back-aware retrieval: each image is scored independently and the
         per-label scores are averaged (mean aggregation), matching the sidepair
         fusion strategy validated during training. Falls back to a single image
-        seamlessly (the average of one value is itself)."""
-        per_image = [self._best_per_label(img) for img in images]
+        seamlessly (the average of one value is itself).
+
+        rx_or_otc: "RX" or "OTC" restricts to that category's priority-tier
+        labels only (the "ask RX/OTC/don't know" app mode, and the search
+        mode the training gate's 93-98% numbers were measured against). Any
+        other value (None, "unknown", or a category with no loaded mask)
+        falls back to the full unrestricted gallery -- always available,
+        just measured lower (~89.5% top10)."""
+        label_mask = self._restricted_masks.get(rx_or_otc) if rx_or_otc else None
+        per_image = [self._best_per_label(img, label_mask=label_mask) for img in images]
         scores_by_label = torch.stack([s for s, _ in per_image], dim=0).mean(dim=0)
         similarities_per_image = [sims for _, sims in per_image]
 
-        k = min(k, self.num_reference_pills)
+        k = min(k, int((scores_by_label > -torch.inf).sum().item()))
         top_scores, top_label_indices = scores_by_label.topk(k)
 
         predictions: List[Prediction] = []
