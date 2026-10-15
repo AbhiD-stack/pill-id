@@ -31,6 +31,23 @@ function containFit(naturalW: number, naturalH: number, boxSize: number): Rect {
   return { x: (boxSize - w) / 2, y: (boxSize - h) / 2, w, h };
 }
 
+// A 90/270 rotation of a non-square photo swaps its visual footprint on
+// screen (portrait becomes landscape, or vice versa). containFit() is
+// computed from the image's unrotated natural dimensions, so without this,
+// imageRect (used to keep the crop box clamped to the actual visible
+// photo) would stay stale after rotating -- correct for 0/180, wrong for
+// 90/270. Both rect and boxSize share the same center point (rect is
+// always centered), so swapping w/h and recentering is all that's needed.
+function rotatedRect(rect: Rect, rotation: number, boxSize: number): Rect {
+  const r = ((rotation % 360) + 360) % 360;
+  if (r === 90 || r === 270) {
+    const w = rect.h;
+    const h = rect.w;
+    return { x: (boxSize - w) / 2, y: (boxSize - h) / 2, w, h };
+  }
+  return rect;
+}
+
 export default function ImageCapture({
   onImageReady,
   onCancel,
@@ -94,11 +111,15 @@ export default function ImageCapture({
       ctx.drawImage(img, fit.x, fit.y, fit.w, fit.h);
       ctx.restore();
 
+      // Account for rotation (see rotatedRect) before converting down to
+      // display-space -- otherwise the crop box's clamp bounds go stale
+      // the moment someone rotates a non-square photo.
+      const visualFit = rotatedRect(fit, rotation, BUFFER_SIZE);
       setImageRect({
-        x: fit.x / RESOLUTION_SCALE,
-        y: fit.y / RESOLUTION_SCALE,
-        w: fit.w / RESOLUTION_SCALE,
-        h: fit.h / RESOLUTION_SCALE,
+        x: visualFit.x / RESOLUTION_SCALE,
+        y: visualFit.y / RESOLUTION_SCALE,
+        w: visualFit.w / RESOLUTION_SCALE,
+        h: visualFit.h / RESOLUTION_SCALE,
       });
     };
     img.src = previewSrc;
