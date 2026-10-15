@@ -2,17 +2,18 @@
 "use client";
 
 import { useState } from "react";
-import { identifyPill, type PillMatch } from "@/lib/api";
+import { identifyPill, submitFeedback, type PillMatch, type RxOrOtc } from "@/lib/api";
 import { addLogEntry, addScheduleEntry, checkCompliance, getRecentDrugNames, TimeOfDay } from "@/lib/db";
 import { fullSafetyCheck } from "@/lib/safety";
 import { speak, vibrate } from "./AudioAlert";
 import { logTelemetry } from "@/lib/telemetry";
 import ImageCapture from "./ImageCapture";
 
-type Stage = "capture-front" | "capture-back" | "identifying" | "results";
+type Stage = "choose-category" | "capture-front" | "capture-back" | "identifying" | "results";
 
 export default function Scanner() {
-  const [stage, setStage] = useState<Stage>("capture-front");
+  const [stage, setStage] = useState<Stage>("choose-category");
+  const [rxOrOtc, setRxOrOtc] = useState<RxOrOtc>(null);
   const [statusMsg, setStatusMsg] = useState("Analyzing pill features...");
   const [matches, setMatches] = useState<PillMatch[] | null>(null);
   const [lowConfidence, setLowConfidence] = useState(false);
@@ -21,6 +22,8 @@ export default function Scanner() {
   const [scanTime, setScanTime] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [frontCanvas, setFrontCanvas] = useState<HTMLCanvasElement | null>(null);
+  const [predictionId, setPredictionId] = useState<string | null>(null);
+  const [searchMode, setSearchMode] = useState<"restricted" | "unrestricted" | null>(null);
 
   const handleFrontCaptured = (canvas: HTMLCanvasElement) => {
     setFrontCanvas(canvas);
@@ -36,7 +39,7 @@ export default function Scanner() {
     const t0 = performance.now();
 
     try {
-      const result = await identifyPill(front, 5, back);
+      const result = await identifyPill(front, 5, back, rxOrOtc);
       const latency = performance.now() - t0;
       setScanTime(Math.round(latency));
       logTelemetry("identify_pill", latency);
@@ -44,6 +47,8 @@ export default function Scanner() {
       setMatches(result.matches);
       setLowConfidence(result.lowConfidence);
       setOcrImprintRead(result.ocrImprintRead);
+      setPredictionId(result.predictionId);
+      setSearchMode(result.searchMode);
       setStage("results");
 
       const top = result.matches[0];
@@ -76,7 +81,10 @@ export default function Scanner() {
     setScanTime(null);
     setPreviewUrl(null);
     setFrontCanvas(null);
-    setStage("capture-front");
+    setPredictionId(null);
+    setSearchMode(null);
+    setRxOrOtc(null);
+    setStage("choose-category");
   };
 
   async function scheduleDrop(match: PillMatch, bucket: TimeOfDay) {
@@ -100,6 +108,38 @@ export default function Scanner() {
 
   return (
     <div>
+      {stage === "choose-category" && (
+        <div className="max-w-md mx-auto text-center space-y-5 py-8">
+          <div>
+            <p className="text-lg font-bold text-slate-900">Is this a prescription or over-the-counter pill?</p>
+            <p className="text-sm text-slate-500 mt-1">
+              Knowing this narrows the search and gives a much more accurate match. Choose &quot;Not
+              sure&quot; if you don&apos;t know — it still works, just less precisely.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 gap-3">
+            <button
+              onClick={() => { setRxOrOtc("RX"); setStage("capture-front"); }}
+              className="px-4 py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition shadow-sm text-base"
+            >
+              Prescription (RX)
+            </button>
+            <button
+              onClick={() => { setRxOrOtc("OTC"); setStage("capture-front"); }}
+              className="px-4 py-3.5 bg-cyan-600 hover:bg-cyan-700 text-white font-bold rounded-2xl transition shadow-sm text-base"
+            >
+              Over-the-counter (OTC)
+            </button>
+            <button
+              onClick={() => { setRxOrOtc(null); setStage("capture-front"); }}
+              className="px-4 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl transition shadow-sm text-base"
+            >
+              Not sure
+            </button>
+          </div>
+        </div>
+      )}
+
       {stage === "capture-front" && (
         <ImageCapture
           sideLabel="front"
@@ -134,6 +174,8 @@ export default function Scanner() {
           safetyNote={safetyNote}
           scanTime={scanTime}
           previewUrl={previewUrl}
+          predictionId={predictionId}
+          searchMode={searchMode}
           onDrop={scheduleDrop}
           onRetake={resetScanner}
         />
@@ -149,6 +191,8 @@ function ResultsView({
   safetyNote,
   scanTime,
   previewUrl,
+  predictionId,
+  searchMode,
   onDrop,
   onRetake,
 }: {
@@ -158,9 +202,13 @@ function ResultsView({
   safetyNote: string | null;
   scanTime: number | null;
   previewUrl: string | null;
+  predictionId: string | null;
+  searchMode: "restricted" | "unrestricted" | null;
   onDrop: (match: PillMatch, bucket: TimeOfDay) => void;
   onRetake: () => void;
 }) {
+  const [feedbackState, setFeedbackState] = useState<"idle" | "sending" | "sent" | "error">("idle");
+
   function handleDragStart(e: React.DragEvent, match: PillMatch) {
     e.dataTransfer.setData("text/plain", match.label);
   }
@@ -170,6 +218,20 @@ function ResultsView({
     const label = e.dataTransfer.getData("text/plain");
     const matchToUse = matches.find((m) => m.label === label) || matches[0];
     onDrop(matchToUse, bucket);
+  }
+
+  async function sendFeedback(correct: boolean, reportedLabel?: string | null) {
+    if (!predictionId || feedbackState === "sending" || feedbackState === "sent") return;
+    setFeedbackState("sending");
+    try {
+      await submitFeedback(predictionId, correct, reportedLabel);
+      setFeedbackState("sent");
+    } catch (err) {
+      // Best-effort: feedback failing should never disrupt the scan result
+      // the user is already looking at.
+      console.error("Feedback submission failed:", err);
+      setFeedbackState("error");
+    }
   }
 
   return (
@@ -347,6 +409,46 @@ function ResultsView({
           ))}
         </div>
       </div>
+
+      {/* Feedback: this is currently the ONLY source of real phone-photo
+          accuracy data this app collects -- every accuracy number behind
+          this model was measured on curated/studio-style photos, not real
+          user scans. Keep this low-friction; don't block or nag. */}
+      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-center space-y-2">
+        {feedbackState === "sent" ? (
+          <p className="text-sm text-emerald-700 font-medium">Thanks — that helps us improve matches.</p>
+        ) : (
+          <>
+            <p className="text-xs font-bold text-slate-600 uppercase tracking-wider">Was this match right?</p>
+            <div className="flex items-center justify-center gap-2">
+              <button
+                onClick={() => sendFeedback(true, matches[0]?.label)}
+                disabled={feedbackState === "sending" || !predictionId}
+                className="px-4 py-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 font-bold rounded-xl text-xs transition disabled:opacity-50"
+              >
+                ✓ Yes, correct
+              </button>
+              <button
+                onClick={() => sendFeedback(false)}
+                disabled={feedbackState === "sending" || !predictionId}
+                className="px-4 py-2 bg-red-100 hover:bg-red-200 text-red-800 font-bold rounded-xl text-xs transition disabled:opacity-50"
+              >
+                ✗ None of these
+              </button>
+            </div>
+            {feedbackState === "error" && (
+              <p className="text-xs text-slate-400">Couldn&apos;t send feedback — no worries, continue as normal.</p>
+            )}
+          </>
+        )}
+      </div>
+
+      {searchMode === "unrestricted" && (
+        <p className="text-[11px] text-slate-400 text-center">
+          Searched the full drug database (category wasn&apos;t specified) — accuracy is typically
+          higher when you tell us RX or OTC up front.
+        </p>
+      )}
 
       <button
         onClick={onRetake}

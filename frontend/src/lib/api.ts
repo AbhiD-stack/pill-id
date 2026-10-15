@@ -13,18 +13,35 @@ export type PredictionResult = {
 };
 
 export type PredictResponse = {
+  prediction_id: string;
   predictions: PredictionResult[];
   ocr_imprint_read: string | null;
   low_confidence: boolean;
+  // "restricted" = searched only priority-tier RX/OTC (the much higher-accuracy
+  // mode, 93-98% top10 measured); "unrestricted" = full gallery fallback (89.5%
+  // top10), used when rxOrOtc is omitted/"unknown" or not available server-side.
+  search_mode: "restricted" | "unrestricted";
 };
+
+// "RX" | "OTC" restricts the search to that category's priority-tier drugs
+// (the "ask RX/OTC/don't know" app mode) -- omit or pass null/"unknown" for
+// "don't know", which falls back to the full, lower-accuracy gallery search.
+export type RxOrOtc = "RX" | "OTC" | null;
 
 const apiBase = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
 
-export async function predictPill(file: File, fileBack?: File | null): Promise<PredictResponse> {
+export async function predictPill(
+  file: File,
+  fileBack?: File | null,
+  rxOrOtc?: RxOrOtc
+): Promise<PredictResponse> {
   const formData = new FormData();
   formData.append("file", file);
   if (fileBack) {
     formData.append("file_back", fileBack);
+  }
+  if (rxOrOtc) {
+    formData.append("rx_or_otc", rxOrOtc);
   }
 
   const response = await fetch(`${apiBase}/api/predict`, {
@@ -42,6 +59,36 @@ export async function predictPill(file: File, fileBack?: File | null): Promise<P
   }
 
   return (await response.json()) as PredictResponse;
+}
+
+// "None of these were right" (or "this one was right") feedback, tied to the
+// actual photo via prediction_id. This is currently the ONLY source of real
+// consumer-domain (phone-photo) accuracy data this project has -- every gate
+// number so far comes from the same curated-source distribution as training.
+// Best-effort: a feedback failure should never block or disrupt the user's
+// actual identification flow, so callers should treat a thrown error here as
+// non-fatal (log it, don't surface it as if the scan itself failed).
+export async function submitFeedback(
+  predictionId: string,
+  correct: boolean,
+  reportedLabel?: string | null,
+  notes?: string | null
+): Promise<void> {
+  const formData = new FormData();
+  formData.append("prediction_id", predictionId);
+  formData.append("correct", String(correct));
+  if (reportedLabel) formData.append("reported_label", reportedLabel);
+  if (notes) formData.append("notes", notes);
+
+  const response = await fetch(`${apiBase}/api/feedback`, {
+    method: "POST",
+    body: formData,
+    headers: { "ngrok-skip-browser-warning": "true" },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Feedback request failed with status ${response.status}`);
+  }
 }
 
 // 1. Keep this dead simple to construct the absolute path
@@ -90,6 +137,8 @@ export type IdentifyResult = {
   matches: PillMatch[];
   lowConfidence: boolean;
   ocrImprintRead: string | null;
+  predictionId: string;
+  searchMode: "restricted" | "unrestricted";
 };
 
 export function canvasToFile(canvas: HTMLCanvasElement, quality = 0.9): Promise<File> {
@@ -111,11 +160,13 @@ export function canvasToFile(canvas: HTMLCanvasElement, quality = 0.9): Promise<
 export async function identifyPill(
   canvas: HTMLCanvasElement,
   topN = 5,
-  backCanvas?: HTMLCanvasElement | null
+  backCanvas?: HTMLCanvasElement | null,
+  rxOrOtc?: RxOrOtc
 ): Promise<IdentifyResult> {
   const file = await canvasToFile(canvas);
   const fileBack = backCanvas ? await canvasToFile(backCanvas) : null;
-  const { predictions, low_confidence, ocr_imprint_read } = await predictPill(file, fileBack);
+  const { prediction_id, predictions, low_confidence, ocr_imprint_read, search_mode } =
+    await predictPill(file, fileBack, rxOrOtc);
 
   const top = predictions.slice(0, topN);
   const matches = await Promise.all(
@@ -129,5 +180,11 @@ export async function identifyPill(
         : null,
     }))
   );
-  return { matches, lowConfidence: low_confidence, ocrImprintRead: ocr_imprint_read };
+  return {
+    matches,
+    lowConfidence: low_confidence,
+    ocrImprintRead: ocr_imprint_read,
+    predictionId: prediction_id,
+    searchMode: search_mode,
+  };
 }

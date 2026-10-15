@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-type CaptureMode = "upload" | "camera" | "preview";
+type CaptureMode = "upload" | "preview";
 
 export default function ImageCapture({
   onImageReady,
@@ -28,8 +28,6 @@ export default function ImageCapture({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
   const previewContainerRef = useRef<HTMLDivElement>(null);
 
@@ -71,43 +69,6 @@ export default function ImageCapture({
       setCropBox({ x: 25, y: 25, w: 250, h: 250 });
     };
     reader.readAsDataURL(file);
-  };
-
-  // Camera capture
-  const startCamera = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 1280 } },
-      });
-      setMode("camera");
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-    } catch (err) {
-      alert("Camera access denied or unavailable");
-    }
-  };
-
-  const captureFromCamera = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) return;
-
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext("2d")!;
-    ctx.drawImage(video, 0, 0);
-
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.95);
-    setPreviewSrc(dataUrl);
-    setMode("preview");
-    setRotation(0);
-    setZoom(1);
-    setCropBox({ x: 25, y: 25, w: 250, h: 250 });
-
-    // Stop camera stream
-    const stream = video.srcObject as MediaStream;
-    stream?.getTracks().forEach((track) => track.stop());
   };
 
   const handleRotate = () => {
@@ -229,21 +190,19 @@ export default function ImageCapture({
           </h3>
           <p className="text-sm text-slate-600 mb-4">Get the best results with good lighting and tight crop.</p>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition"
-            >
-              📁 Upload from Device
-            </button>
-
-            <button
-              onClick={startCamera}
-              className="px-6 py-3 bg-green-600 hover:bg-green-700 text-white font-semibold rounded-lg transition"
-            >
-              📷 Take Photo
-            </button>
-          </div>
+          {/* Single button: on mobile this opens the OS's native picker, which
+              already offers "Take Photo" / "Photo Library" / "Browse" itself --
+              a separate getUserMedia()-based "Take Photo" button was removed
+              because it silently failed on some devices (camera permission /
+              HTTPS quirks varied by browser), confusing doctors testing the
+              app into thinking the scanner was broken when this button (the
+              one that always works) was sitting right next to it. */}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="w-full px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition"
+          >
+            📷 Take or Choose Photo
+          </button>
 
           {allowSkip && (
             <button
@@ -262,37 +221,6 @@ export default function ImageCapture({
             onChange={handleFileSelect}
             className="hidden"
           />
-        </div>
-      )}
-
-      {mode === "camera" && (
-        <div className="space-y-3">
-          {sideLabel && (
-            <p className="text-sm font-medium text-slate-700 text-center">
-              Frame the <span className="font-semibold">{sideLabel}</span> of the pill
-            </p>
-          )}
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="w-full rounded-lg"
-          />
-          <div className="flex gap-2">
-            <button
-              onClick={captureFromCamera}
-              className="flex-1 px-4 py-3 bg-green-600 hover:bg-green-700 text-white font-semibold rounded-lg"
-            >
-              ✓ Capture
-            </button>
-            <button
-              onClick={onCancel}
-              className="flex-1 px-4 py-3 bg-slate-300 hover:bg-slate-400 text-slate-900 font-semibold rounded-lg"
-            >
-              ✕ Cancel
-            </button>
-          </div>
         </div>
       )}
 
@@ -402,7 +330,6 @@ export default function ImageCapture({
         </div>
       )}
 
-      <canvas ref={canvasRef} className="hidden" />
     </div>
   );
 }
