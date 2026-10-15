@@ -4,6 +4,8 @@ export type PredictionResult = {
   name: string | null;
   imprint: string | null;
   color: string | null;
+  shape: string | null;
+  score_marks: string | null;
   status: string | null;
   score: number;
   score_pct: number;
@@ -129,6 +131,9 @@ export type PillMatch = {
   label: string;
   ndc: string | null;
   drug_name: string | null;
+  imprint: string | null;
+  color: string | null;
+  shape: string | null;
   score: number;
   reference_image_url: string | null;
 };
@@ -174,6 +179,9 @@ export async function identifyPill(
       label: p.label,
       ndc: p.ndc,
       drug_name: p.name && p.name.trim() !== "" ? p.name : null,
+      imprint: p.imprint,
+      color: p.color,
+      shape: p.shape,
       score: p.score,
       reference_image_url: p.reference_image_url
         ? await fetchSecureImageBlob(referenceImageSrc(p.reference_image_url))

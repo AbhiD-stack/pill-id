@@ -389,6 +389,11 @@ function ResultsView({
                 <div className="min-w-0 flex-1">
                   <p className="font-bold text-slate-900 text-sm truncate">{m.drug_name || m.label}</p>
                   <p className="text-[11px] text-slate-400 font-mono">NDC: {m.ndc || "N/A"}</p>
+                  {(m.imprint || m.color || m.shape) && (
+                    <p className="text-[11px] text-slate-500 truncate">
+                      {[m.imprint && `Imprint: ${m.imprint}`, m.color, m.shape].filter(Boolean).join(" · ")}
+                    </p>
+                  )}
                   <p className="text-xs font-bold text-emerald-600 mt-0.5">{(m.score * 100).toFixed(0)}% confidence</p>
                 </div>
               </div>

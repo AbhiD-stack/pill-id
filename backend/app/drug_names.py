@@ -33,6 +33,8 @@ class DrugInfo(TypedDict, total=False):
     rxcui: Optional[str]
     imprint: Optional[str]
     color: Optional[str]
+    shape: Optional[str]
+    score_marks: Optional[str]
     status: Optional[str]
 
 

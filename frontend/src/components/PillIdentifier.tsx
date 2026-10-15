@@ -667,7 +667,7 @@ function ResultCard({ result, size }: { result: PredictionResult; size: "large" 
       <div className="min-w-0 flex-1">
         <p className={`truncate font-bold text-slate-800 capitalize ${isLarge ? "text-base" : "text-sm"}`}>{displayName}</p>
         <p className="font-mono text-[10px] text-slate-400">NDC {result.ndc}</p>
-        <p className="text-[10px] text-slate-500">Imprint: {result.imprint || "N/A"} | Color: {result.color || "N/A"}</p>
+        <p className="text-[10px] text-slate-500">Imprint: {result.imprint || "N/A"} | Color: {result.color || "N/A"} | Shape: {result.shape || "N/A"}</p>
         <div className="mt-1 flex items-center gap-2">
           <div className="h-1 flex-1 rounded-full bg-slate-100">
             <div className="h-full bg-sky-600" style={{ width: `${result.score_pct}%` }} />

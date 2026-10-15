@@ -169,6 +169,8 @@ async def predict(
                 "name": info.get("name") if info else None,
                 "imprint": info.get("imprint") if info else None,
                 "color": info.get("color") if info else None,
+                "shape": info.get("shape") if info else None,
+                "score_marks": info.get("score_marks") if info else None,
                 "status": info.get("status") if info else None,
                 "score": round(p.score, 4),
                 "score_pct": round(max(0.0, p.score) * 100, 1),

@@ -155,6 +155,7 @@ def main() -> int:
                 "imprint": dm_entry.get("imprint"),
                 "color": dm_entry.get("color"),
                 "shape": dm_entry.get("shape"),
+                "score_marks": dm_entry.get("score_marks"),
                 "rx_or_otc": dm_entry.get("rx_or_otc"),
             }
         # else: leave this label absent from ndc_names.json entirely. A dict
