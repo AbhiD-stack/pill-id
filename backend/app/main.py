@@ -24,7 +24,7 @@ from PIL import Image, UnidentifiedImageError
 
 from classifier import DinoV2PillClassifier
 from config import get_settings
-from drug_names import DrugNameLookup, ndc_from_ref_path
+from drug_names import DrugNameLookup
 from imprint_match import read_imprint_text, score_imprint_match
 from reference_images import ReferenceImageStore, map_to_zip_path
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
@@ -189,7 +189,16 @@ async def predict(
         results.append(
             {
                 "label": p.label,
-                "ndc": ndc_from_ref_path(p.ref_path),
+                # p.label is already the canonical representative NDC9 for
+                # this pooled group (see drug_names.py's module docstring) --
+                # use it directly rather than re-parsing one specific
+                # reference image's filename, which breaks for sources whose
+                # files aren't NDC-named (e.g. ePillID's "consumer" photo
+                # subset uses content-hash filenames, so the old fallback
+                # would show a hash like "97121f6cbb03..." as the "NDC" even
+                # when the real name/imprint/color lookup above succeeded
+                # fine via the label).
+                "ndc": p.label,
                 "name": info.get("name") if info else None,
                 "imprint": info.get("imprint") if info else None,
                 "color": info.get("color") if info else None,
