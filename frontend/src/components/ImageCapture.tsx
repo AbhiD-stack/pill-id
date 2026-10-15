@@ -18,6 +18,7 @@ const RESOLUTION_SCALE = 5;
 const BUFFER_SIZE = DISPLAY_SIZE * RESOLUTION_SCALE;
 
 type Rect = { x: number; y: number; w: number; h: number };
+type DragMode = "move" | "n" | "s" | "e" | "w" | "nw" | "ne" | "sw" | "se";
 
 // "Contain" fit: the largest rect of the image's own aspect ratio that
 // fits inside a boxSize x boxSize square, centered. Drawing the image into
@@ -54,7 +55,7 @@ export default function ImageCapture({
   // the crop box from being draggable into the empty letterbox area.
   const [imageRect, setImageRect] = useState<Rect>({ x: 0, y: 0, w: DISPLAY_SIZE, h: DISPLAY_SIZE });
   // "move" drags the whole box; "nw"/"ne"/"sw"/"se" resizes from that corner.
-  const [dragMode, setDragMode] = useState<"move" | "nw" | "ne" | "sw" | "se" | null>(null);
+  const [dragMode, setDragMode] = useState<DragMode | null>(null);
   const dragStartRef = useRef({ pointerX: 0, pointerY: 0, box: { x: 0, y: 0, w: 0, h: 0 } });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -137,7 +138,7 @@ export default function ImageCapture({
     setRotation((r) => (r + 90) % 360);
   };
 
-  const beginDrag = (mode: "move" | "nw" | "ne" | "sw" | "se") => (e: React.PointerEvent) => {
+  const beginDrag = (mode: DragMode) => (e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
     dragStartRef.current = {
@@ -176,46 +177,35 @@ export default function ImageCapture({
           return { ...box, x: newX, y: newY };
         }
 
-        const x = box.x + dx;
-        const y = box.y + dy;
-        let newBox = { ...box };
+        // Each edge moves independently based on which handle is active --
+        // a corner just moves two edges at once ("nw" = top edge + left
+        // edge). No forced-square constraint: free resizing is more
+        // predictable to drag than a box that snaps to a different size
+        // than your finger moved.
+        const right = box.x + box.w;
+        const bottom = box.y + box.h;
+        let { x, y, w, h } = box;
 
-        // Enforce a square crop box anchored at the opposite corner
-        if (dragMode === "nw") {
-          const candidateW = box.x + box.w - x;
-          const candidateH = box.y + box.h - y;
-          let newSize = Math.max(minSize, Math.min(candidateW, candidateH));
-          newSize = Math.min(newSize, box.x + box.w - minX, box.y + box.h - minY);
-          newBox.w = newBox.h = newSize;
-          newBox.x = box.x + box.w - newSize;
-          newBox.y = box.y + box.h - newSize;
-        } else if (dragMode === "ne") {
-          const candidateW = x - box.x;
-          const candidateH = box.y + box.h - y;
-          let newSize = Math.max(minSize, Math.min(candidateW, candidateH));
-          newSize = Math.min(newSize, maxX - box.x, box.y + box.h - minY);
-          newBox.w = newBox.h = newSize;
-          newBox.x = box.x;
-          newBox.y = box.y + box.h - newSize;
-        } else if (dragMode === "sw") {
-          const candidateW = box.x + box.w - x;
-          const candidateH = y - box.y;
-          let newSize = Math.max(minSize, Math.min(candidateW, candidateH));
-          newSize = Math.min(newSize, box.x + box.w - minX, maxY - box.y);
-          newBox.w = newBox.h = newSize;
-          newBox.x = box.x + box.w - newSize;
-          newBox.y = box.y;
-        } else if (dragMode === "se") {
-          const candidateW = x - box.x;
-          const candidateH = y - box.y;
-          let newSize = Math.max(minSize, Math.min(candidateW, candidateH));
-          newSize = Math.min(newSize, maxX - box.x, maxY - box.y);
-          newBox.w = newBox.h = newSize;
-          newBox.x = box.x;
-          newBox.y = box.y;
+        if (dragMode.includes("w")) {
+          const newX = Math.max(minX, Math.min(right - minSize, box.x + dx));
+          w = right - newX;
+          x = newX;
+        }
+        if (dragMode.includes("e")) {
+          const newRight = Math.min(maxX, Math.max(box.x + minSize, right + dx));
+          w = newRight - x;
+        }
+        if (dragMode.includes("n")) {
+          const newY = Math.max(minY, Math.min(bottom - minSize, box.y + dy));
+          h = bottom - newY;
+          y = newY;
+        }
+        if (dragMode.includes("s")) {
+          const newBottom = Math.min(maxY, Math.max(box.y + minSize, bottom + dy));
+          h = newBottom - y;
         }
 
-        return newBox;
+        return { x, y, w, h };
       });
     };
 
@@ -329,12 +319,16 @@ export default function ImageCapture({
                 className="w-full h-full object-contain"
               />
 
-              {/* Crop box: drag the body to move it, drag a corner to resize.
-                  touchAction: "none" throughout stops the browser from
-                  treating the drag as a page-scroll/pinch-zoom gesture. */}
+              {/* Crop box: drag the body to move it, drag a corner or an
+                  edge to resize. touchAction: "none" throughout stops the
+                  browser from treating the drag as a page-scroll/pinch-zoom
+                  gesture. A thicker border + bigger handles (both the
+                  invisible touch target and the visible dot/bar) make this
+                  much easier to grab precisely with a finger than the
+                  original thin-line, small-corner-only version. */}
               <div
                 onPointerDown={beginDrag("move")}
-                className="absolute border-2 border-yellow-400 bg-yellow-400/10 cursor-move"
+                className="absolute border-[3px] border-yellow-400 bg-yellow-400/10 cursor-move"
                 style={{
                   left: `${cropBox.x}px`,
                   top: `${cropBox.y}px`,
@@ -343,21 +337,48 @@ export default function ImageCapture({
                   touchAction: "none",
                 }}
               >
-                {/* Corners. Hit target is a larger invisible touch area
-                    (w-10 h-10) around a smaller visible yellow dot, since a
-                    16px box is too small to reliably grab with a finger. */}
+                {/* Edge midpoints: drag to resize just that one side. */}
+                {(["n", "s", "e", "w"] as const).map((edge) => {
+                  const vertical = edge === "n" || edge === "s";
+                  return (
+                    <div
+                      key={edge}
+                      onPointerDown={beginDrag(edge)}
+                      className={`absolute flex items-center justify-center ${
+                        vertical ? "w-16 h-8 cursor-ns-resize" : "w-8 h-16 cursor-ew-resize"
+                      }`}
+                      style={{
+                        ...(edge === "n" ? { top: "-16px", left: "50%", transform: "translateX(-50%)" } : {}),
+                        ...(edge === "s" ? { bottom: "-16px", left: "50%", transform: "translateX(-50%)" } : {}),
+                        ...(edge === "w" ? { left: "-16px", top: "50%", transform: "translateY(-50%)" } : {}),
+                        ...(edge === "e" ? { right: "-16px", top: "50%", transform: "translateY(-50%)" } : {}),
+                        touchAction: "none",
+                      }}
+                    >
+                      <div
+                        className={`bg-yellow-400 rounded-full border-2 border-white shadow ${
+                          vertical ? "w-8 h-3" : "w-3 h-8"
+                        }`}
+                      />
+                    </div>
+                  );
+                })}
+
+                {/* Corners: bigger invisible hit area (w-14 h-14) around a
+                    bigger visible dot than the edge handles, since a corner
+                    is the fiddliest grab (easy to miss two axes at once). */}
                 {(["nw", "ne", "sw", "se"] as const).map((corner) => (
                   <div
                     key={corner}
                     onPointerDown={beginDrag(corner)}
-                    className={`absolute w-10 h-10 flex items-center justify-center cursor-${corner}-resize`}
+                    className={`absolute w-14 h-14 flex items-center justify-center cursor-${corner}-resize`}
                     style={{
-                      [corner.includes("n") ? "top" : "bottom"]: "-20px",
-                      [corner.includes("w") ? "left" : "right"]: "-20px",
+                      [corner.includes("n") ? "top" : "bottom"]: "-28px",
+                      [corner.includes("w") ? "left" : "right"]: "-28px",
                       touchAction: "none",
                     }}
                   >
-                    <div className="w-4 h-4 bg-yellow-400 rounded-full border-2 border-white shadow" />
+                    <div className="w-6 h-6 bg-yellow-400 rounded-full border-2 border-white shadow" />
                   </div>
                 ))}
               </div>
@@ -379,7 +400,7 @@ export default function ImageCapture({
 
           <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
             <p className="text-xs text-yellow-800">
-              💡 Drag inside the yellow box to move it, or drag a corner to resize it — crop in tight around the pill.
+              💡 Drag inside the box to move it. Drag a corner (big dot) or an edge (bar) to resize — crop in tight around the pill.
             </p>
           </div>
 
