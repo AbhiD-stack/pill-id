@@ -97,23 +97,37 @@ class DrugNameLookup:
         match, substring/case-insensitive. Returns (label, info, match_count)
         for anything with at least one match, best matches first. This is
         the fallback path for when the photo-based match misses -- the same
-        idea as Epocrates' "describe the pill" identifier."""
-        criteria = [
+        idea as Epocrates' "describe the pill" identifier.
+
+        imprint is treated specially: the stored data has one imprint string
+        per pill (often multiple tokens from both faces joined, e.g.
+        "L437;PM"), not a per-side breakdown. The UI collects "Side 1" and
+        "Side 2" separately for a natural two-sided-pill description, but
+        here they're just space-joined and split back into whitespace-
+        separated tokens, matched OR-wise (any token present anywhere in the
+        stored imprint counts as a hit) -- a strict substring match on the
+        joined string would almost never hit, since the real field doesn't
+        preserve "side order" the way a two-field form naturally implies."""
+        simple_criteria = [
             ("color", color),
             ("shape", shape),
-            ("imprint", imprint),
             ("score_marks", score_marks),
         ]
-        criteria = [(field, val.strip().lower()) for field, val in criteria if val and val.strip()]
-        if not criteria:
+        simple_criteria = [(field, val.strip().lower()) for field, val in simple_criteria if val and val.strip()]
+        imprint_tokens = [t.lower() for t in (imprint or "").split() if t.strip()]
+        if not simple_criteria and not imprint_tokens:
             return []
 
         scored: list[tuple[str, DrugInfo, int]] = []
         for label, info in self._table.items():
             count = 0
-            for field, val in criteria:
+            for field, val in simple_criteria:
                 field_val = (info.get(field) or "").lower()
                 if field_val and val in field_val:
+                    count += 1
+            if imprint_tokens:
+                stored_imprint = (info.get("imprint") or "").lower()
+                if stored_imprint and any(tok in stored_imprint for tok in imprint_tokens):
                     count += 1
             if count > 0:
                 scored.append((label, info, count))

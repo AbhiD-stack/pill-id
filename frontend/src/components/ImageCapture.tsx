@@ -22,16 +22,17 @@ export default function ImageCapture({
   const [mode, setMode] = useState<CaptureMode>("upload");
   const [previewSrc, setPreviewSrc] = useState<string>("");
   const [rotation, setRotation] = useState(0);
-  const [zoom, setZoom] = useState(1);
   const [cropBox, setCropBox] = useState({ x: 0, y: 0, w: 0, h: 0 });
-  const [draggingCorner, setDraggingCorner] = useState<string | null>(null);
+  // "move" drags the whole box; "nw"/"ne"/"sw"/"se" resizes from that corner.
+  const [dragMode, setDragMode] = useState<"move" | "nw" | "ne" | "sw" | "se" | null>(null);
+  const dragStartRef = useRef({ pointerX: 0, pointerY: 0, box: { x: 0, y: 0, w: 0, h: 0 } });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
   const previewContainerRef = useRef<HTMLDivElement>(null);
 
-  // Redraw preview whenever rotation/zoom/crop changes
+  // Redraw preview whenever rotation/crop changes
   useEffect(() => {
     if (!previewSrc || mode !== "preview") return;
 
@@ -47,13 +48,12 @@ export default function ImageCapture({
       ctx.save();
       ctx.translate(150, 150);
       ctx.rotate((rotation * Math.PI) / 180);
-      ctx.scale(zoom, zoom);
       ctx.translate(-150, -150);
       ctx.drawImage(img, 0, 0, 300, 300);
       ctx.restore();
     };
     img.src = previewSrc;
-  }, [previewSrc, rotation, zoom, mode]);
+  }, [previewSrc, rotation, mode]);
 
   // Upload from device
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -65,7 +65,6 @@ export default function ImageCapture({
       setPreviewSrc(evt.target?.result as string);
       setMode("preview");
       setRotation(0);
-      setZoom(1);
       setCropBox({ x: 25, y: 25, w: 250, h: 250 });
     };
     reader.readAsDataURL(file);
@@ -75,13 +74,15 @@ export default function ImageCapture({
     setRotation((r) => (r + 90) % 360);
   };
 
-  const handleZoom = (delta: number) => {
-    setZoom((z) => Math.max(0.5, Math.min(3, z + delta)));
-  };
-
-  const handlePointerDown = (corner: string) => (e: React.PointerEvent) => {
+  const beginDrag = (mode: "move" | "nw" | "ne" | "sw" | "se") => (e: React.PointerEvent) => {
     e.preventDefault();
-    setDraggingCorner(corner);
+    e.stopPropagation();
+    dragStartRef.current = {
+      pointerX: e.clientX,
+      pointerY: e.clientY,
+      box: { ...cropBox },
+    };
+    setDragMode(mode);
   };
 
   useEffect(() => {
@@ -90,52 +91,59 @@ export default function ImageCapture({
     // on phones before, which looked like "only zoom works" even though the
     // crop box was there the whole time.
     const handlePointerMove = (e: PointerEvent) => {
-      if (!draggingCorner || !previewContainerRef.current) return;
+      if (!dragMode) return;
 
-      const rect = previewContainerRef.current.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-
+      const { pointerX, pointerY, box } = dragStartRef.current;
+      const dx = e.clientX - pointerX;
+      const dy = e.clientY - pointerY;
       const minSize = 50;
       const maxX = 300;
       const maxY = 300;
 
-      setCropBox((prev) => {
-        let newBox = { ...prev };
+      setCropBox(() => {
+        if (dragMode === "move") {
+          const newX = Math.max(0, Math.min(maxX - box.w, box.x + dx));
+          const newY = Math.max(0, Math.min(maxY - box.h, box.y + dy));
+          return { ...box, x: newX, y: newY };
+        }
+
+        const x = box.x + dx;
+        const y = box.y + dy;
+        let newBox = { ...box };
 
         // Enforce a square crop box anchored at the opposite corner
-        if (draggingCorner === "nw") {
-          const candidateW = prev.x + prev.w - x;
-          const candidateH = prev.y + prev.h - y;
+        if (dragMode === "nw") {
+          const candidateW = box.x + box.w - x;
+          const candidateH = box.y + box.h - y;
           let newSize = Math.max(minSize, Math.min(candidateW, candidateH));
-          newSize = Math.min(newSize, prev.x + prev.w, prev.y + prev.h, maxX, maxY);
+          newSize = Math.min(newSize, box.x + box.w, box.y + box.h, maxX, maxY);
           newBox.w = newBox.h = newSize;
-          newBox.x = prev.x + prev.w - newSize;
-          newBox.y = prev.y + prev.h - newSize;
-        } else if (draggingCorner === "ne") {
-          const candidateW = x - prev.x;
-          const candidateH = prev.y + prev.h - y;
+          newBox.x = box.x + box.w - newSize;
+          newBox.y = box.y + box.h - newSize;
+        } else if (dragMode === "ne") {
+          const candidateW = x - box.x;
+          const candidateH = box.y + box.h - y;
           let newSize = Math.max(minSize, Math.min(candidateW, candidateH));
-          newSize = Math.min(newSize, maxX - prev.x, prev.y + prev.h, maxY);
+          newSize = Math.min(newSize, maxX - box.x, box.y + box.h, maxY);
           newBox.w = newBox.h = newSize;
-          newBox.x = prev.x;
-          newBox.y = prev.y + prev.h - newSize;
-        } else if (draggingCorner === "sw") {
-          const candidateW = prev.x + prev.w - x;
-          const candidateH = y - prev.y;
+          newBox.x = box.x;
+          newBox.y = box.y + box.h - newSize;
+        } else if (dragMode === "sw") {
+          const candidateW = box.x + box.w - x;
+          const candidateH = y - box.y;
           let newSize = Math.max(minSize, Math.min(candidateW, candidateH));
-          newSize = Math.min(newSize, prev.x + prev.w, maxY - prev.y, maxX);
+          newSize = Math.min(newSize, box.x + box.w, maxY - box.y, maxX);
           newBox.w = newBox.h = newSize;
-          newBox.x = prev.x + prev.w - newSize;
-          newBox.y = prev.y;
-        } else if (draggingCorner === "se") {
-          const candidateW = x - prev.x;
-          const candidateH = y - prev.y;
+          newBox.x = box.x + box.w - newSize;
+          newBox.y = box.y;
+        } else if (dragMode === "se") {
+          const candidateW = x - box.x;
+          const candidateH = y - box.y;
           let newSize = Math.max(minSize, Math.min(candidateW, candidateH));
-          newSize = Math.min(newSize, maxX - prev.x, maxY - prev.y);
+          newSize = Math.min(newSize, maxX - box.x, maxY - box.y);
           newBox.w = newBox.h = newSize;
-          newBox.x = prev.x;
-          newBox.y = prev.y;
+          newBox.x = box.x;
+          newBox.y = box.y;
         }
 
         return newBox;
@@ -143,10 +151,10 @@ export default function ImageCapture({
     };
 
     const handlePointerUp = () => {
-      setDraggingCorner(null);
+      setDragMode(null);
     };
 
-    if (draggingCorner) {
+    if (dragMode) {
       document.addEventListener("pointermove", handlePointerMove);
       document.addEventListener("pointerup", handlePointerUp);
       return () => {
@@ -154,7 +162,7 @@ export default function ImageCapture({
         document.removeEventListener("pointerup", handlePointerUp);
       };
     }
-  }, [draggingCorner]);
+  }, [dragMode]);
 
   const handleSubmit = async () => {
     const canvas = previewCanvasRef.current;
@@ -163,8 +171,7 @@ export default function ImageCapture({
     if (isSubmitting) return;
     setIsSubmitting(true);
 
-    // Count adjustments (rotations + zoom changes)
-    const adjustmentCount = Math.abs(rotation / 90) + (zoom !== 1 ? 1 : 0);
+    const adjustmentCount = Math.abs(rotation / 90);
 
     // Apply crop
     const croppedCanvas = document.createElement("canvas");
@@ -244,28 +251,28 @@ export default function ImageCapture({
                 className="w-full h-full object-cover"
               />
 
-              {/* Crop box with draggable corners */}
+              {/* Crop box: drag the body to move it, drag a corner to resize.
+                  touchAction: "none" throughout stops the browser from
+                  treating the drag as a page-scroll/pinch-zoom gesture. */}
               <div
-                className="absolute border-2 border-yellow-400 bg-yellow-400/10"
+                onPointerDown={beginDrag("move")}
+                className="absolute border-2 border-yellow-400 bg-yellow-400/10 cursor-move"
                 style={{
                   left: `${cropBox.x}px`,
                   top: `${cropBox.y}px`,
                   width: `${cropBox.w}px`,
                   height: `${cropBox.h}px`,
+                  touchAction: "none",
                 }}
               >
                 {/* Corners. Hit target is a larger invisible touch area
                     (w-10 h-10) around a smaller visible yellow dot, since a
-                    16px box is too small to reliably grab with a finger.
-                    touchAction: "none" stops the browser from treating the
-                    drag as a page-scroll/pinch-zoom gesture instead. */}
-                {["nw", "ne", "sw", "se"].map((corner) => (
+                    16px box is too small to reliably grab with a finger. */}
+                {(["nw", "ne", "sw", "se"] as const).map((corner) => (
                   <div
                     key={corner}
-                    onPointerDown={handlePointerDown(corner)}
-                    className={`absolute w-10 h-10 flex items-center justify-center cursor-${
-                      corner === "nw" ? "nw" : corner === "ne" ? "ne" : corner === "sw" ? "sw" : "se"
-                    }-resize`}
+                    onPointerDown={beginDrag(corner)}
+                    className={`absolute w-10 h-10 flex items-center justify-center cursor-${corner}-resize`}
                     style={{
                       [corner.includes("n") ? "top" : "bottom"]: "-20px",
                       [corner.includes("w") ? "left" : "right"]: "-20px",
@@ -290,38 +297,11 @@ export default function ImageCapture({
               </button>
             </div>
 
-            <div>
-              <label className="text-sm font-medium text-slate-700 block mb-2">Zoom</label>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => handleZoom(-0.1)}
-                  className="px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-900 rounded font-medium text-sm"
-                >
-                  −
-                </button>
-                <input
-                  type="range"
-                  min="0.5"
-                  max="3"
-                  step="0.1"
-                  value={zoom}
-                  onChange={(e) => setZoom(parseFloat(e.target.value))}
-                  className="flex-1"
-                />
-                <button
-                  onClick={() => handleZoom(0.1)}
-                  className="px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-900 rounded font-medium text-sm"
-                >
-                  +
-                </button>
-                <span className="text-sm text-slate-600">{zoom.toFixed(1)}×</span>
-              </div>
-            </div>
           </div>
 
           <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
             <p className="text-xs text-yellow-800">
-              💡 Drag the yellow corners to crop around the pill tightly.
+              💡 Drag inside the yellow box to move it, or drag a corner to resize it — crop in tight around the pill.
             </p>
           </div>
 

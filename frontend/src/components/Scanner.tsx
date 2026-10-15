@@ -25,6 +25,7 @@ export default function Scanner() {
   const [frontCanvas, setFrontCanvas] = useState<HTMLCanvasElement | null>(null);
   const [predictionId, setPredictionId] = useState<string | null>(null);
   const [searchMode, setSearchMode] = useState<"restricted" | "unrestricted" | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
 
   const handleFrontCaptured = (canvas: HTMLCanvasElement) => {
     setFrontCanvas(canvas);
@@ -39,23 +40,38 @@ export default function Scanner() {
 
     const t0 = performance.now();
 
+    setScanError(null);
+    let result;
     try {
-      const result = await identifyPill(front, 5, back, rxOrOtc);
-      const latency = performance.now() - t0;
-      setScanTime(Math.round(latency));
-      logTelemetry("identify_pill", latency);
+      result = await identifyPill(front, 5, back, rxOrOtc);
+    } catch (err: any) {
+      console.error("Scan failed:", err);
+      setScanError(err?.message || String(err));
+      setStage("capture-front");
+      return;
+    }
 
-      setMatches(result.matches);
-      setLowConfidence(result.lowConfidence);
-      setOcrImprintRead(result.ocrImprintRead);
-      setPredictionId(result.predictionId);
-      setSearchMode(result.searchMode);
-      setStage("results");
+    const latency = performance.now() - t0;
+    setScanTime(Math.round(latency));
+    logTelemetry("identify_pill", latency);
 
-      const top = result.matches[0];
-      if (top) {
-        vibrate([100, 50, 100]);
+    setMatches(result.matches);
+    setLowConfidence(result.lowConfidence);
+    setOcrImprintRead(result.ocrImprintRead);
+    setPredictionId(result.predictionId);
+    setSearchMode(result.searchMode);
+    setStage("results");
 
+    // Safety check is best-effort and must never roll back a successful
+    // identification just because it itself failed (e.g. the static
+    // beers_criteria.json/drug_interactions.json fetch hiccuped) -- that
+    // used to share a try/catch with the identify call above, so any
+    // failure here silently reset the whole screen back to the capture
+    // step even though the match had already come back fine.
+    const top = result.matches[0];
+    if (top) {
+      vibrate([100, 50, 100]);
+      try {
         const existing = await getRecentDrugNames(24 * 30);
         const { beers, interactions } = await fullSafetyCheck(top.drug_name || top.label, existing);
         if (beers) {
@@ -66,11 +82,10 @@ export default function Scanner() {
         } else {
           setSafetyNote(null);
         }
+      } catch (err) {
+        console.error("Safety check failed (non-fatal):", err);
+        setSafetyNote(null);
       }
-    } catch (err) {
-      console.error("Scan failed:", err);
-      setStatusMsg("Scan failed. Try again.");
-      setStage("capture-front");
     }
   };
 
@@ -85,6 +100,7 @@ export default function Scanner() {
     setPredictionId(null);
     setSearchMode(null);
     setRxOrOtc(null);
+    setScanError(null);
     setStage("choose-category");
   };
 
@@ -155,11 +171,19 @@ export default function Scanner() {
       )}
 
       {stage === "capture-front" && (
-        <ImageCapture
-          sideLabel="front"
-          onImageReady={(canvas) => handleFrontCaptured(canvas)}
-          onCancel={() => setStage("capture-front")}
-        />
+        <>
+          {scanError && (
+            <div className="bg-red-50 border-l-4 border-red-500 rounded-r-xl p-4 shadow-sm mb-4">
+              <p className="text-sm text-red-900 font-semibold">⚠ Scan failed</p>
+              <p className="text-xs text-red-800 mt-1 break-words">{scanError}</p>
+            </div>
+          )}
+          <ImageCapture
+            sideLabel="front"
+            onImageReady={(canvas) => handleFrontCaptured(canvas)}
+            onCancel={() => setStage("capture-front")}
+          />
+        </>
       )}
 
       {stage === "capture-back" && frontCanvas && (
