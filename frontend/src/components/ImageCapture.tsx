@@ -79,12 +79,17 @@ export default function ImageCapture({
     setZoom((z) => Math.max(0.5, Math.min(3, z + delta)));
   };
 
-  const handleMouseDown = (corner: string) => (e: React.MouseEvent) => {
+  const handlePointerDown = (corner: string) => (e: React.PointerEvent) => {
+    e.preventDefault();
     setDraggingCorner(corner);
   };
 
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
+    // Pointer Events (not Mouse Events) so this works with touch and pen
+    // input, not just a mouse -- the corners were silently drag-unresponsive
+    // on phones before, which looked like "only zoom works" even though the
+    // crop box was there the whole time.
+    const handlePointerMove = (e: PointerEvent) => {
       if (!draggingCorner || !previewContainerRef.current) return;
 
       const rect = previewContainerRef.current.getBoundingClientRect();
@@ -137,16 +142,16 @@ export default function ImageCapture({
       });
     };
 
-    const handleMouseUp = () => {
+    const handlePointerUp = () => {
       setDraggingCorner(null);
     };
 
     if (draggingCorner) {
-      document.addEventListener("mousemove", handleMouseMove);
-      document.addEventListener("mouseup", handleMouseUp);
+      document.addEventListener("pointermove", handlePointerMove);
+      document.addEventListener("pointerup", handlePointerUp);
       return () => {
-        document.removeEventListener("mousemove", handleMouseMove);
-        document.removeEventListener("mouseup", handleMouseUp);
+        document.removeEventListener("pointermove", handlePointerMove);
+        document.removeEventListener("pointerup", handlePointerUp);
       };
     }
   }, [draggingCorner]);
@@ -249,19 +254,26 @@ export default function ImageCapture({
                   height: `${cropBox.h}px`,
                 }}
               >
-                {/* Corners */}
+                {/* Corners. Hit target is a larger invisible touch area
+                    (w-10 h-10) around a smaller visible yellow dot, since a
+                    16px box is too small to reliably grab with a finger.
+                    touchAction: "none" stops the browser from treating the
+                    drag as a page-scroll/pinch-zoom gesture instead. */}
                 {["nw", "ne", "sw", "se"].map((corner) => (
                   <div
                     key={corner}
-                    onMouseDown={handleMouseDown(corner)}
-                    className={`absolute w-4 h-4 bg-yellow-400 cursor-${
+                    onPointerDown={handlePointerDown(corner)}
+                    className={`absolute w-10 h-10 flex items-center justify-center cursor-${
                       corner === "nw" ? "nw" : corner === "ne" ? "ne" : corner === "sw" ? "sw" : "se"
                     }-resize`}
                     style={{
-                      [corner.includes("n") ? "top" : "bottom"]: "-8px",
-                      [corner.includes("w") ? "left" : "right"]: "-8px",
+                      [corner.includes("n") ? "top" : "bottom"]: "-20px",
+                      [corner.includes("w") ? "left" : "right"]: "-20px",
+                      touchAction: "none",
                     }}
-                  />
+                  >
+                    <div className="w-4 h-4 bg-yellow-400 rounded-full border-2 border-white shadow" />
+                  </div>
                 ))}
               </div>
             </div>

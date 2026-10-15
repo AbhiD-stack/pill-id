@@ -195,6 +195,20 @@ class DinoV2PillClassifier:
             scores_by_label = scores_by_label.masked_fill(~label_mask, -torch.inf)
         return scores_by_label, similarities
 
+    def ref_path_for_label(self, label: str) -> Optional[str]:
+        """A representative reference-image path for a label, independent of
+        any query image -- used by name/appearance search, which has no
+        photo to score similarity against."""
+        matches = np.nonzero(self.label_strings == label)[0]
+        if matches.size == 0:
+            return None
+        label_idx = int(matches[0])
+        mask = (self.ref_label_indices == label_idx).cpu().numpy()
+        idxs = np.nonzero(mask)[0]
+        if idxs.size == 0:
+            return None
+        return str(self.ref_abs_paths[idxs[0]])
+
     def has_restricted_mode(self, rx_or_otc: Optional[str]) -> bool:
         """Whether predict_topk(_multi) will actually restrict the gallery
         for this value, vs. silently falling back to the unrestricted

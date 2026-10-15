@@ -3,11 +3,12 @@
 
 import { useState } from "react";
 import { identifyPill, submitFeedback, type PillMatch, type RxOrOtc } from "@/lib/api";
-import { addLogEntry, addScheduleEntry, checkCompliance, getRecentDrugNames, TimeOfDay } from "@/lib/db";
+import { addLogEntry, addScheduleEntry, addReferencePill, checkCompliance, getRecentDrugNames, TimeOfDay } from "@/lib/db";
 import { fullSafetyCheck } from "@/lib/safety";
 import { speak, vibrate } from "./AudioAlert";
 import { logTelemetry } from "@/lib/telemetry";
 import ImageCapture from "./ImageCapture";
+import PillSearchPanel from "./PillSearchPanel";
 
 type Stage = "choose-category" | "capture-front" | "capture-back" | "identifying" | "results";
 
@@ -106,6 +107,19 @@ export default function Scanner() {
     resetScanner();
   }
 
+  async function saveAsReference(match: PillMatch) {
+    if (!previewUrl) return;
+    await addReferencePill({
+      drugName: match.drug_name || match.label,
+      ndc: match.ndc ?? undefined,
+      imprint: match.imprint ?? undefined,
+      color: match.color ?? undefined,
+      shape: match.shape ?? undefined,
+      photoDataUrl: previewUrl,
+    });
+    vibrate(150);
+  }
+
   return (
     <div>
       {stage === "choose-category" && (
@@ -177,6 +191,7 @@ export default function Scanner() {
           predictionId={predictionId}
           searchMode={searchMode}
           onDrop={scheduleDrop}
+          onSaveReference={saveAsReference}
           onRetake={resetScanner}
         />
       )}
@@ -194,6 +209,7 @@ function ResultsView({
   predictionId,
   searchMode,
   onDrop,
+  onSaveReference,
   onRetake,
 }: {
   matches: PillMatch[];
@@ -205,9 +221,12 @@ function ResultsView({
   predictionId: string | null;
   searchMode: "restricted" | "unrestricted" | null;
   onDrop: (match: PillMatch, bucket: TimeOfDay) => void;
+  onSaveReference: (match: PillMatch) => void;
   onRetake: () => void;
 }) {
   const [feedbackState, setFeedbackState] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [savedLabels, setSavedLabels] = useState<Set<string>>(new Set());
+  const [showAppearanceSearch, setShowAppearanceSearch] = useState(false);
 
   function handleDragStart(e: React.DragEvent, match: PillMatch) {
     e.dataTransfer.setData("text/plain", match.label);
@@ -409,10 +428,39 @@ function ResultsView({
                 >
                   🔊
                 </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSaveReference(m);
+                    setSavedLabels((prev) => new Set(prev).add(m.label));
+                  }}
+                  disabled={savedLabels.has(m.label)}
+                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition disabled:opacity-50"
+                  title="Save as my reference pill (for comparing against future refills)"
+                >
+                  {savedLabels.has(m.label) ? "📌 Saved" : "📌 Save"}
+                </button>
               </div>
             </div>
           ))}
         </div>
+      </div>
+
+      {/* Fallback for when the right pill genuinely isn't in the top matches
+          above -- describe its color/shape/imprint/score marks instead and
+          search the same metadata directly (no photo similarity involved). */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-4">
+        <button
+          onClick={() => setShowAppearanceSearch((v) => !v)}
+          className="w-full text-center text-sm font-semibold text-indigo-600"
+        >
+          {showAppearanceSearch ? "▲ Hide" : "▼ Don't see your pill? Search by name or appearance instead"}
+        </button>
+        {showAppearanceSearch && (
+          <div className="mt-4">
+            <PillSearchPanel compact />
+          </div>
+        )}
       </div>
 
       {/* Feedback: this is currently the ONLY source of real phone-photo

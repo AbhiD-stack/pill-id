@@ -259,6 +259,60 @@ def reference_image(path: str = Query(..., description="Zip member path under eP
         headers={"Cache-Control": "public, max-age=86400"},
     )
 
+def _build_search_result(label: str, info: dict) -> dict:
+    clf: DinoV2PillClassifier = state["classifier"]
+    ref_store: ReferenceImageStore | None = state["ref_store"]
+    ref_url = None
+    ref_path = clf.ref_path_for_label(label)
+    if ref_path and ref_store is not None:
+        zip_path = map_to_zip_path(ref_path)
+        if ref_store.has(zip_path):
+            ref_url = f"/api/reference-image?path={quote(zip_path)}"
+    return {
+        "label": label,
+        "ndc": label,
+        "name": info.get("name"),
+        "imprint": info.get("imprint"),
+        "color": info.get("color"),
+        "shape": info.get("shape"),
+        "score_marks": info.get("score_marks"),
+        "reference_image_url": ref_url,
+    }
+
+
+@app.get("/api/search-by-name")
+def search_by_name(q: str = Query(..., min_length=1), limit: int = Query(20, le=50)):
+    """Look a medication up by name instead of a photo -- 'what does X look
+    like' rather than 'what is this'."""
+    drug_names: DrugNameLookup = state["drug_names"]
+    results = drug_names.search_by_name(q, limit=limit)
+    return {"results": [_build_search_result(label, info) for label, info in results]}
+
+
+@app.get("/api/search-by-appearance")
+def search_by_appearance(
+    color: str | None = Query(None),
+    shape: str | None = Query(None),
+    imprint: str | None = Query(None),
+    score_marks: str | None = Query(None),
+    limit: int = Query(20, le=50),
+):
+    """Fallback for when the photo-based match misses: describe what the
+    pill looks like (color/shape/imprint/score marks) and search the same
+    metadata table directly, the way Epocrates' manual identifier works."""
+    drug_names: DrugNameLookup = state["drug_names"]
+    if not any([color, shape, imprint, score_marks]):
+        raise HTTPException(status_code=400, detail="Provide at least one of color/shape/imprint/score_marks.")
+    results = drug_names.search_by_appearance(
+        color=color, shape=shape, imprint=imprint, score_marks=score_marks, limit=limit
+    )
+    return {
+        "results": [
+            {**_build_search_result(label, info), "match_count": count} for label, info, count in results
+        ]
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     # Change it to this:

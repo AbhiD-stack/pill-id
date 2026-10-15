@@ -2,11 +2,12 @@
 
 import React, { useState, useEffect } from "react";
 import Scanner from "@/components/Scanner";
-import { getSchedule, ScheduleEntry } from "@/lib/db";
+import PillSearchPanel from "@/components/PillSearchPanel";
+import { getSchedule, ScheduleEntry, getReferencePills, deleteReferencePill, ReferencePill } from "@/lib/db";
 import { checkBeersCriteria, checkInteractions, BeersFlag, InteractionFlag } from "@/lib/safety";
 import { buildQrPassportDataUrl } from "@/lib/pdf";
 
-type TabType = "scan" | "schedule" | "safety" | "passport" | "export";
+type TabType = "scan" | "schedule" | "safety" | "lookup" | "passport" | "export";
 
 interface MainAppProps {
   onResetSession: () => void;
@@ -18,6 +19,7 @@ export default function MainApp({ onResetSession }: MainAppProps) {
   const [beersFlags, setBeersFlags] = useState<{ entry: ScheduleEntry; flag: BeersFlag }[]>([]);
   const [interactionFlags, setInteractionFlags] = useState<InteractionFlag[]>([]);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [referencePills, setReferencePills] = useState<ReferencePill[]>([]);
 
   // The real medication list lives in IndexedDB (written by Scanner when a
   // match is dropped into a time bucket) -- refresh from it whenever a tab
@@ -25,6 +27,9 @@ export default function MainApp({ onResetSession }: MainAppProps) {
   useEffect(() => {
     if (activeTab === "schedule" || activeTab === "safety" || activeTab === "passport") {
       getSchedule().then(setSchedule);
+    }
+    if (activeTab === "passport") {
+      getReferencePills().then(setReferencePills);
     }
   }, [activeTab]);
 
@@ -192,8 +197,20 @@ export default function MainApp({ onResetSession }: MainAppProps) {
           </div>
         )}
 
-        {activeTab === "passport" && (
+        {activeTab === "lookup" && (
           <div className="flex flex-col space-y-4">
+            <div>
+              <h2 className="text-xl font-bold text-slate-900">Look Up a Medication</h2>
+              <p className="text-sm text-slate-500">
+                No photo needed — search by name, or describe what the pill looks like.
+              </p>
+            </div>
+            <PillSearchPanel />
+          </div>
+        )}
+
+        {activeTab === "passport" && (
+          <div className="flex flex-col space-y-6">
             <div>
               <h2 className="text-xl font-bold text-slate-900">Medication Passport</h2>
               <p className="text-sm text-slate-500">Portable emergency summary profile.</p>
@@ -217,6 +234,56 @@ export default function MainApp({ onResetSession }: MainAppProps) {
                   : "Scan this passport code to load the medication list instantly, with no server-side data persistence."}
               </p>
             </div>
+
+            <div>
+              <h3 className="font-semibold text-slate-900 mb-1">My Reference Pills</h3>
+              <p className="text-xs text-slate-500">
+                Generic medications are often made by several different manufacturers, and your pharmacy can switch
+                which one they stock between refills — so a pill that's a different color or shape than last time
+                isn't necessarily a mistake. Saving a photo here when you first get a medication gives you something
+                concrete to compare a refill against, and to show your pharmacist if you want to ask "why does this
+                look different?" (Tap "📌 Save as my reference" on a scan result in the Scan tab to add one.)
+              </p>
+            </div>
+
+            {referencePills.length === 0 ? (
+              <div className="p-8 text-center border-2 border-dashed border-slate-200 rounded-2xl bg-white shadow-sm text-slate-400 text-sm">
+                No reference pills saved yet.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {referencePills.map((r) => (
+                  <div key={r.id} className="p-4 bg-white border border-slate-200 rounded-xl shadow-sm flex gap-3">
+                    <img
+                      src={r.photoDataUrl}
+                      alt={r.drugName}
+                      className="w-20 h-20 rounded-lg border border-slate-200 object-contain bg-slate-50 p-1 shrink-0"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="font-bold text-slate-900 text-sm truncate">{r.drugName}</p>
+                      <p className="text-[11px] text-slate-400 font-mono">NDC: {r.ndc || "N/A"}</p>
+                      {(r.imprint || r.color || r.shape) && (
+                        <p className="text-[11px] text-slate-500">
+                          {[r.imprint && `Imprint: ${r.imprint}`, r.color, r.shape].filter(Boolean).join(" · ")}
+                        </p>
+                      )}
+                      <p className="text-[10px] text-slate-400 mt-1">
+                        Saved {new Date(r.savedAt).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        deleteReferencePill(r.id).then(() => getReferencePills().then(setReferencePills));
+                      }}
+                      className="self-start text-slate-400 hover:text-red-600 text-xs px-2 py-1"
+                      title="Remove"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -286,6 +353,14 @@ export default function MainApp({ onResetSession }: MainAppProps) {
         >
           <span className="text-xl">🛡️</span>
           <span className="text-[11px] mt-0.5">Safety</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("lookup")}
+          className={`flex flex-col items-center flex-1 py-1.5 transition ${activeTab === "lookup" ? "text-blue-600 font-semibold" : "text-slate-500 hover:text-slate-800"}`}
+        >
+          <span className="text-xl">🔍</span>
+          <span className="text-[11px] mt-0.5">Lookup</span>
         </button>
 
         <button

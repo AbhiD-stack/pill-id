@@ -68,6 +68,58 @@ class DrugNameLookup:
         """Preferred lookup for the new gallery -- see module docstring."""
         return self._table.get(label)
 
+    def search_by_name(self, query: str, limit: int = 20) -> list[tuple[str, DrugInfo]]:
+        """Case-insensitive substring match against drug name. Returns
+        (label, info) pairs, exact-prefix matches first."""
+        q = query.strip().lower()
+        if not q:
+            return []
+        starts, contains = [], []
+        for label, info in self._table.items():
+            name = (info.get("name") or "").lower()
+            if not name:
+                continue
+            if name.startswith(q):
+                starts.append((label, info))
+            elif q in name:
+                contains.append((label, info))
+        return (starts + contains)[:limit]
+
+    def search_by_appearance(
+        self,
+        color: Optional[str] = None,
+        shape: Optional[str] = None,
+        imprint: Optional[str] = None,
+        score_marks: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[tuple[str, DrugInfo, int]]:
+        """Ranks every label by how many of the given (non-empty) criteria
+        match, substring/case-insensitive. Returns (label, info, match_count)
+        for anything with at least one match, best matches first. This is
+        the fallback path for when the photo-based match misses -- the same
+        idea as Epocrates' "describe the pill" identifier."""
+        criteria = [
+            ("color", color),
+            ("shape", shape),
+            ("imprint", imprint),
+            ("score_marks", score_marks),
+        ]
+        criteria = [(field, val.strip().lower()) for field, val in criteria if val and val.strip()]
+        if not criteria:
+            return []
+
+        scored: list[tuple[str, DrugInfo, int]] = []
+        for label, info in self._table.items():
+            count = 0
+            for field, val in criteria:
+                field_val = (info.get(field) or "").lower()
+                if field_val and val in field_val:
+                    count += 1
+            if count > 0:
+                scored.append((label, info, count))
+        scored.sort(key=lambda row: row[2], reverse=True)
+        return scored[:limit]
+
     @property
     def size(self) -> int:
         return len(self._table)

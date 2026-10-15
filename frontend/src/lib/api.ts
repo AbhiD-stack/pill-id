@@ -30,6 +30,18 @@ export type PredictResponse = {
 // "don't know", which falls back to the full, lower-accuracy gallery search.
 export type RxOrOtc = "RX" | "OTC" | null;
 
+export type SearchResult = {
+  label: string;
+  ndc: string | null;
+  name: string | null;
+  imprint: string | null;
+  color: string | null;
+  shape: string | null;
+  score_marks: string | null;
+  reference_image_url: string | null;
+  match_count?: number;
+};
+
 const apiBase = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
 
 export async function predictPill(
@@ -195,4 +207,55 @@ export async function identifyPill(
     predictionId: prediction_id,
     searchMode: search_mode,
   };
+}
+
+async function _resolveSearchResultImages(results: SearchResult[]): Promise<SearchResult[]> {
+  return Promise.all(
+    results.map(async (r) => ({
+      ...r,
+      reference_image_url: r.reference_image_url
+        ? await fetchSecureImageBlob(referenceImageSrc(r.reference_image_url))
+        : null,
+    }))
+  );
+}
+
+// "What does <drug name> look like" -- the opposite direction from a photo
+// scan: look a medication up by name and see its known appearance.
+export async function searchByName(query: string): Promise<SearchResult[]> {
+  const response = await fetch(`${apiBase}/api/search-by-name?q=${encodeURIComponent(query)}`, {
+    headers: { "ngrok-skip-browser-warning": "true" },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Search failed with status ${response.status}`);
+  }
+  const { results } = (await response.json()) as { results: SearchResult[] };
+  return _resolveSearchResultImages(results);
+}
+
+// Fallback for when the photo-based match misses: describe the pill
+// (color/shape/imprint/score marks) instead of showing a photo, the same
+// idea as Epocrates' manual pill identifier.
+export async function searchByAppearance(criteria: {
+  color?: string;
+  shape?: string;
+  imprint?: string;
+  scoreMarks?: string;
+}): Promise<SearchResult[]> {
+  const params = new URLSearchParams();
+  if (criteria.color) params.set("color", criteria.color);
+  if (criteria.shape) params.set("shape", criteria.shape);
+  if (criteria.imprint) params.set("imprint", criteria.imprint);
+  if (criteria.scoreMarks) params.set("score_marks", criteria.scoreMarks);
+
+  const response = await fetch(`${apiBase}/api/search-by-appearance?${params.toString()}`, {
+    headers: { "ngrok-skip-browser-warning": "true" },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Search failed with status ${response.status}`);
+  }
+  const { results } = (await response.json()) as { results: SearchResult[] };
+  return _resolveSearchResultImages(results);
 }

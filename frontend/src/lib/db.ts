@@ -21,21 +21,45 @@ export interface LogEntry {
   onSchedule: boolean; // compliance logic result
 }
 
+// A pinned "this is what MY actual pill looks like" record -- the point is
+// recall safety: generic manufacturers change between refills (different
+// color/shape, same drug), which regularly scares patients into thinking a
+// pharmacy error happened. Saving a photo + the expected appearance here
+// gives the user something concrete to compare a new refill against and
+// to show a pharmacist, instead of relying on memory.
+export interface ReferencePill {
+  id: string; // uuid
+  drugName: string;
+  ndc?: string;
+  imprint?: string;
+  color?: string;
+  shape?: string;
+  photoDataUrl: string; // the user's own captured photo, base64 data URL
+  savedAt: number;
+  notes?: string;
+}
+
 interface PillIDDb extends DBSchema {
   schedule: { key: string; value: ScheduleEntry; indexes: { "by-bucket": string } };
   logs: { key: string; value: LogEntry; indexes: { "by-time": number } };
+  referencePills: { key: string; value: ReferencePill };
 }
 
 let dbPromise: Promise<IDBPDatabase<PillIDDb>> | null = null;
 
 function getDb() {
   if (!dbPromise) {
-    dbPromise = openDB<PillIDDb>("pill-id-v2", 1, {
-      upgrade(db) {
-        const schedule = db.createObjectStore("schedule", { keyPath: "id" });
-        schedule.createIndex("by-bucket", "bucket");
-        const logs = db.createObjectStore("logs", { keyPath: "id" });
-        logs.createIndex("by-time", "scannedAt");
+    dbPromise = openDB<PillIDDb>("pill-id-v2", 2, {
+      upgrade(db, oldVersion) {
+        if (oldVersion < 1) {
+          const schedule = db.createObjectStore("schedule", { keyPath: "id" });
+          schedule.createIndex("by-bucket", "bucket");
+          const logs = db.createObjectStore("logs", { keyPath: "id" });
+          logs.createIndex("by-time", "scannedAt");
+        }
+        if (oldVersion < 2) {
+          db.createObjectStore("referencePills", { keyPath: "id" });
+        }
       },
     });
   }
@@ -91,4 +115,22 @@ export async function getRecentDrugNames(hours = 24): Promise<string[]> {
   const logs = await getLogs();
   const cutoff = Date.now() - hours * 3600 * 1000;
   return logs.filter((l) => l.scannedAt >= cutoff).map((l) => l.drugName);
+}
+
+export async function addReferencePill(entry: Omit<ReferencePill, "id" | "savedAt">) {
+  const db = await getDb();
+  const full: ReferencePill = { ...entry, id: crypto.randomUUID(), savedAt: Date.now() };
+  await db.put("referencePills", full);
+  return full;
+}
+
+export async function getReferencePills(): Promise<ReferencePill[]> {
+  const db = await getDb();
+  const all = await db.getAll("referencePills");
+  return all.sort((a, b) => b.savedAt - a.savedAt);
+}
+
+export async function deleteReferencePill(id: string) {
+  const db = await getDb();
+  await db.delete("referencePills", id);
 }
