@@ -35,12 +35,22 @@ function normalize(name: string) {
   return name.trim().toLowerCase();
 }
 
+// Scanned drug names come back from the backend as full RxNorm-style
+// strings ("ibuprofen 200 MG Oral Tablet"), not bare generic names, so an
+// exact-equality check against a flagged entry's "ibuprofen" would never
+// match anything -- the Beers/interaction checks would silently always
+// come back clean regardless of what was actually scanned. Match by
+// substring instead.
+function nameMatches(fullDrugName: string, candidate: string): boolean {
+  return normalize(fullDrugName).includes(normalize(candidate));
+}
+
 export async function checkBeersCriteria(drugName: string): Promise<BeersFlag | null> {
   const { flagged_drugs } = await loadBeers();
-  const n = normalize(drugName);
   return (
     flagged_drugs.find(
-      (d: any) => normalize(d.drug_name) === n || (d.aliases || []).some((a: string) => normalize(a) === n)
+      (d: any) =>
+        nameMatches(drugName, d.drug_name) || (d.aliases || []).some((a: string) => nameMatches(drugName, a))
     ) || null
   );
 }
@@ -53,12 +63,12 @@ export async function checkInteractions(
   existingDrugs: string[]
 ): Promise<InteractionFlag[]> {
   const { interactions } = await loadInteractions();
-  const n = normalize(newDrug);
-  const existingSet = new Set(existingDrugs.map(normalize));
   return interactions.filter((i) => {
-    const a = normalize(i.drug_a);
-    const b = normalize(i.drug_b);
-    return (a === n && existingSet.has(b)) || (b === n && existingSet.has(a));
+    const newMatchesA = nameMatches(newDrug, i.drug_a);
+    const newMatchesB = nameMatches(newDrug, i.drug_b);
+    if (!newMatchesA && !newMatchesB) return false;
+    const otherCandidate = newMatchesA ? i.drug_b : i.drug_a;
+    return existingDrugs.some((d) => nameMatches(d, otherCandidate));
   });
 }
 
