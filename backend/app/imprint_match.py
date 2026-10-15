@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Optional
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 import os
 
@@ -48,32 +48,59 @@ def _normalize_tokens(text: str) -> set[str]:
 
 
 def _preprocess_for_ocr(image: Image.Image) -> Image.Image:
-    """Upscale + grayscale + autocontrast; embossed imprints are low-contrast."""
+    """Upscale + grayscale + sharpen + autocontrast; embossed imprints are
+    low-contrast and easily lost to blur at phone-camera distances."""
     gray = ImageOps.grayscale(image)
     w, h = gray.size
     scale = max(1, 1200 // max(w, h))
     if scale > 1:
         gray = gray.resize((w * scale, h * scale), Image.LANCZOS)
+    gray = gray.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
     return ImageOps.autocontrast(gray, cutoff=2)
+
+
+# A single fixed layout assumption (--psm 11) was a frequent source of
+# garbage reads (e.g. reading "CC SC" off a pill actually imprinted "575")
+# -- different photos put the imprint in different positions/orientations
+# relative to the frame, so trying a few layout assumptions and keeping
+# only what Tesseract itself is confident about catches real imprints that
+# a single mode misses, without just inventing more noise.
+_PSM_MODES = ("11", "7", "6")  # sparse text / single line / uniform block
+_MIN_CONFIDENCE = 40  # 0-100, Tesseract's own per-word confidence
+
+
+def _ocr_tokens(processed: Image.Image, psm: str) -> set[str]:
+    try:
+        data = pytesseract.image_to_data(
+            processed,
+            config=f"--psm {psm} -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            output_type=pytesseract.Output.DICT,
+        )
+    except Exception:
+        return set()
+    tokens: set[str] = set()
+    for text, conf in zip(data.get("text", []), data.get("conf", [])):
+        try:
+            if float(conf) < _MIN_CONFIDENCE:
+                continue
+        except (TypeError, ValueError):
+            continue
+        tokens.update(t for t in _TOKEN_RE.findall(text.upper()) if len(t) >= 2)
+    return tokens
 
 
 def read_imprint_text(image: Image.Image) -> Optional[str]:
     """Best-effort OCR read of the query image. Returns None if OCR is unavailable
-    or nothing legible was found."""
+    or nothing legible was found above the confidence floor."""
     if pytesseract is None:
         return None
     try:
         processed = _preprocess_for_ocr(image)
-        raw = pytesseract.image_to_string(
-            processed,
-            config="--psm 11 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
-        )
     except Exception:
         return None
-    tokens = _normalize_tokens(raw)
-    # Drop single-character tokens; OCR noise on pill photos is mostly stray
-    # 1-char blobs from scoring lines / edges, not real imprint characters.
-    tokens = {t for t in tokens if len(t) >= 2}
+    tokens: set[str] = set()
+    for psm in _PSM_MODES:
+        tokens |= _ocr_tokens(processed, psm)
     return " ".join(sorted(tokens)) if tokens else None
 
 

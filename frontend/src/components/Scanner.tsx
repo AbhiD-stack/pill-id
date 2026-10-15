@@ -5,7 +5,6 @@ import { useState } from "react";
 import { identifyPill, submitFeedback, type PillMatch, type RxOrOtc } from "@/lib/api";
 import { addLogEntry, addScheduleEntry, addReferencePill, checkCompliance, getRecentDrugNames, TimeOfDay } from "@/lib/db";
 import { fullSafetyCheck } from "@/lib/safety";
-import { accuracyDisclaimer } from "@/lib/modelAccuracy";
 import { speak, vibrate } from "./AudioAlert";
 import { logTelemetry } from "@/lib/telemetry";
 import ImageCapture from "./ImageCapture";
@@ -283,13 +282,6 @@ function ResultsView({
 
   return (
     <div className="space-y-6 max-w-3xl mx-auto pb-12">
-      {/* Always shown, not conditional on the match score -- the eval's own
-          calibration curve is nearly flat (a 95% score is not meaningfully
-          more trustworthy than a 40% one), so a score-gated warning alone
-          would miss exactly the high-score-but-wrong case this is for. */}
-      <div className="bg-amber-50 border-l-4 border-amber-500 rounded-r-xl p-4 shadow-sm">
-        <p className="text-xs text-amber-900">{accuracyDisclaimer(rxOrOtc)}</p>
-      </div>
       {lowConfidence && (
         <div className="bg-red-50 border-l-4 border-red-500 rounded-r-xl p-4 shadow-sm">
           <p className="text-sm text-red-900 font-semibold">

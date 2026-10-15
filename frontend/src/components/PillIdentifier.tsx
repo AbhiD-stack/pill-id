@@ -9,7 +9,6 @@ import {
   referenceImageSrc,
   type PredictionResult,
 } from "@/lib/api";
-import { accuracyDisclaimer } from "@/lib/modelAccuracy";
 
 /** Live in-app camera capture (getUserMedia), so users don't have to leave the
  * app to take a photo in the OS camera and then re-select it from the gallery. */
@@ -514,12 +513,6 @@ export function PillIdentifier() {
               <div className="h-24 animate-pulse rounded-2xl bg-slate-100" />
             ) : rawResults ? (
               <>
-                {/* Always shown -- the training eval's own calibration curve
-                    is nearly flat, so a high match score is not meaningfully
-                    more trustworthy than a low one. See modelAccuracy.ts. */}
-                <div className="mb-3 rounded-2xl border-l-4 border-amber-500 bg-amber-50 p-4">
-                  <p className="text-xs text-amber-900">{accuracyDisclaimer(null)}</p>
-                </div>
                 {lowConfidence && (
                   <div className="mb-3 rounded-2xl border-l-4 border-red-500 bg-red-50 p-4">
                     <p className="text-sm font-semibold text-red-900">
