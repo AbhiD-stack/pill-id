@@ -4,6 +4,32 @@ import { useEffect, useRef, useState } from "react";
 
 type CaptureMode = "upload" | "preview";
 
+// The preview box is shown on screen at DISPLAY_SIZE CSS pixels (a fixed
+// square, matches the w-80/h-80 container below), but the canvas's actual
+// pixel buffer is rendered at DISPLAY_SIZE * RESOLUTION_SCALE -- a modern
+// phone photo is typically 3000-4000px on a side; rendering/cropping at a
+// tiny fixed 300x300 buffer (the previous behavior) threw away almost all
+// of that detail before the backend (or OCR) ever saw it, which plausibly
+// hurt real-world accuracy on its own, independent of the model's own
+// ceiling. 1600px keeps memory/perf reasonable while preserving far more
+// of what the camera actually captured.
+const DISPLAY_SIZE = 320;
+const RESOLUTION_SCALE = 5;
+const BUFFER_SIZE = DISPLAY_SIZE * RESOLUTION_SCALE;
+
+type Rect = { x: number; y: number; w: number; h: number };
+
+// "Contain" fit: the largest rect of the image's own aspect ratio that
+// fits inside a boxSize x boxSize square, centered. Drawing the image into
+// exactly this rect (instead of stretching it to fill the whole square)
+// is what stops a non-square phone photo from being squished/distorted.
+function containFit(naturalW: number, naturalH: number, boxSize: number): Rect {
+  const scale = Math.min(boxSize / naturalW, boxSize / naturalH);
+  const w = naturalW * scale;
+  const h = naturalH * scale;
+  return { x: (boxSize - w) / 2, y: (boxSize - h) / 2, w, h };
+}
+
 export default function ImageCapture({
   onImageReady,
   onCancel,
@@ -23,6 +49,10 @@ export default function ImageCapture({
   const [previewSrc, setPreviewSrc] = useState<string>("");
   const [rotation, setRotation] = useState(0);
   const [cropBox, setCropBox] = useState({ x: 0, y: 0, w: 0, h: 0 });
+  // Where the actual photo content sits within the DISPLAY_SIZE square (the
+  // rest is letterbox) -- used to give a sensible default crop and to stop
+  // the crop box from being draggable into the empty letterbox area.
+  const [imageRect, setImageRect] = useState<Rect>({ x: 0, y: 0, w: DISPLAY_SIZE, h: DISPLAY_SIZE });
   // "move" drags the whole box; "nw"/"ne"/"sw"/"se" resizes from that corner.
   const [dragMode, setDragMode] = useState<"move" | "nw" | "ne" | "sw" | "se" | null>(null);
   const dragStartRef = useRef({ pointerX: 0, pointerY: 0, box: { x: 0, y: 0, w: 0, h: 0 } });
@@ -32,7 +62,11 @@ export default function ImageCapture({
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
   const previewContainerRef = useRef<HTMLDivElement>(null);
 
-  // Redraw preview whenever rotation/crop changes
+  // Redraw preview whenever rotation/crop changes. Draws at full
+  // BUFFER_SIZE resolution, "contain" fit (no stretch) -- the visible
+  // canvas is still DISPLAY_SIZE CSS pixels via the w-80/h-80 container
+  // below, the browser scales the high-res buffer down for display, and
+  // the final crop (handleSubmit) reads back the full-resolution pixels.
   useEffect(() => {
     if (!previewSrc || mode !== "preview") return;
 
@@ -41,16 +75,30 @@ export default function ImageCapture({
 
     const img = new Image();
     img.onload = () => {
-      canvas.width = 300;
-      canvas.height = 300;
+      canvas.width = BUFFER_SIZE;
+      canvas.height = BUFFER_SIZE;
       const ctx = canvas.getContext("2d")!;
 
+      // Letterbox fill so empty space around a non-square photo reads as
+      // "not part of the photo," not a stretched/cropped edge.
+      ctx.fillStyle = "#0f172a"; // slate-900, matches the container bg
+      ctx.fillRect(0, 0, BUFFER_SIZE, BUFFER_SIZE);
+
+      const fit = containFit(img.naturalWidth, img.naturalHeight, BUFFER_SIZE);
+
       ctx.save();
-      ctx.translate(150, 150);
+      ctx.translate(BUFFER_SIZE / 2, BUFFER_SIZE / 2);
       ctx.rotate((rotation * Math.PI) / 180);
-      ctx.translate(-150, -150);
-      ctx.drawImage(img, 0, 0, 300, 300);
+      ctx.translate(-BUFFER_SIZE / 2, -BUFFER_SIZE / 2);
+      ctx.drawImage(img, fit.x, fit.y, fit.w, fit.h);
       ctx.restore();
+
+      setImageRect({
+        x: fit.x / RESOLUTION_SCALE,
+        y: fit.y / RESOLUTION_SCALE,
+        w: fit.w / RESOLUTION_SCALE,
+        h: fit.h / RESOLUTION_SCALE,
+      });
     };
     img.src = previewSrc;
   }, [previewSrc, rotation, mode]);
@@ -62,10 +110,25 @@ export default function ImageCapture({
 
     const reader = new FileReader();
     reader.onload = (evt) => {
-      setPreviewSrc(evt.target?.result as string);
+      const dataUrl = evt.target?.result as string;
+
+      // Figure out the photo's real aspect ratio up front so the default
+      // crop box matches the whole photo (not a generic square that may
+      // include letterbox or miss part of a non-square image) -- this
+      // runs once per new image, independent of the rotation-redraw effect
+      // above, so rotating afterward doesn't reset a crop the user already
+      // adjusted.
+      const probe = new Image();
+      probe.onload = () => {
+        const fit = containFit(probe.naturalWidth, probe.naturalHeight, DISPLAY_SIZE);
+        setImageRect(fit);
+        setCropBox({ ...fit });
+      };
+      probe.src = dataUrl;
+
+      setPreviewSrc(dataUrl);
       setMode("preview");
       setRotation(0);
-      setCropBox({ x: 25, y: 25, w: 250, h: 250 });
     };
     reader.readAsDataURL(file);
   };
@@ -96,14 +159,20 @@ export default function ImageCapture({
       const { pointerX, pointerY, box } = dragStartRef.current;
       const dx = e.clientX - pointerX;
       const dy = e.clientY - pointerY;
-      const minSize = 50;
-      const maxX = 300;
-      const maxY = 300;
+      const minSize = 30;
+      // Clamp to the actual photo content, not the full square -- stops the
+      // crop box from being draggable into the empty letterbox area around
+      // a non-square photo, which used to be part of what made cropping
+      // fiddly (nothing stopped you from grabbing dead space).
+      const minX = imageRect.x;
+      const minY = imageRect.y;
+      const maxX = imageRect.x + imageRect.w;
+      const maxY = imageRect.y + imageRect.h;
 
       setCropBox(() => {
         if (dragMode === "move") {
-          const newX = Math.max(0, Math.min(maxX - box.w, box.x + dx));
-          const newY = Math.max(0, Math.min(maxY - box.h, box.y + dy));
+          const newX = Math.max(minX, Math.min(maxX - box.w, box.x + dx));
+          const newY = Math.max(minY, Math.min(maxY - box.h, box.y + dy));
           return { ...box, x: newX, y: newY };
         }
 
@@ -116,7 +185,7 @@ export default function ImageCapture({
           const candidateW = box.x + box.w - x;
           const candidateH = box.y + box.h - y;
           let newSize = Math.max(minSize, Math.min(candidateW, candidateH));
-          newSize = Math.min(newSize, box.x + box.w, box.y + box.h, maxX, maxY);
+          newSize = Math.min(newSize, box.x + box.w - minX, box.y + box.h - minY);
           newBox.w = newBox.h = newSize;
           newBox.x = box.x + box.w - newSize;
           newBox.y = box.y + box.h - newSize;
@@ -124,7 +193,7 @@ export default function ImageCapture({
           const candidateW = x - box.x;
           const candidateH = box.y + box.h - y;
           let newSize = Math.max(minSize, Math.min(candidateW, candidateH));
-          newSize = Math.min(newSize, maxX - box.x, box.y + box.h, maxY);
+          newSize = Math.min(newSize, maxX - box.x, box.y + box.h - minY);
           newBox.w = newBox.h = newSize;
           newBox.x = box.x;
           newBox.y = box.y + box.h - newSize;
@@ -132,7 +201,7 @@ export default function ImageCapture({
           const candidateW = box.x + box.w - x;
           const candidateH = y - box.y;
           let newSize = Math.max(minSize, Math.min(candidateW, candidateH));
-          newSize = Math.min(newSize, box.x + box.w, maxY - box.y, maxX);
+          newSize = Math.min(newSize, box.x + box.w - minX, maxY - box.y);
           newBox.w = newBox.h = newSize;
           newBox.x = box.x + box.w - newSize;
           newBox.y = box.y;
@@ -162,7 +231,7 @@ export default function ImageCapture({
         document.removeEventListener("pointerup", handlePointerUp);
       };
     }
-  }, [dragMode]);
+  }, [dragMode, imageRect]);
 
   const handleSubmit = async () => {
     const canvas = previewCanvasRef.current;
@@ -173,13 +242,22 @@ export default function ImageCapture({
 
     const adjustmentCount = Math.abs(rotation / 90);
 
-    // Apply crop
+    // cropBox is tracked in display-space (CSS) pixels, but the canvas
+    // buffer is rendered at RESOLUTION_SCALE x that -- scale up to read the
+    // full-resolution pixels instead of the tiny display-space crop that
+    // was being sent before (which threw away most of a real phone
+    // photo's actual resolution).
+    const srcX = cropBox.x * RESOLUTION_SCALE;
+    const srcY = cropBox.y * RESOLUTION_SCALE;
+    const srcW = cropBox.w * RESOLUTION_SCALE;
+    const srcH = cropBox.h * RESOLUTION_SCALE;
+
     const croppedCanvas = document.createElement("canvas");
-    croppedCanvas.width = cropBox.w;
-    croppedCanvas.height = cropBox.h;
+    croppedCanvas.width = srcW;
+    croppedCanvas.height = srcH;
     try {
       const ctx = croppedCanvas.getContext("2d")!;
-      ctx.drawImage(canvas, cropBox.x, cropBox.y, cropBox.w, cropBox.h, 0, 0, cropBox.w, cropBox.h);
+      ctx.drawImage(canvas, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
 
       // Await the parent's handler to catch errors early and show feedback
       await onImageReady(croppedCanvas, croppedCanvas.width, croppedCanvas.height, rotation, Math.round(adjustmentCount));
@@ -248,7 +326,7 @@ export default function ImageCapture({
             >
               <canvas
                 ref={previewCanvasRef}
-                className="w-full h-full object-cover"
+                className="w-full h-full object-contain"
               />
 
               {/* Crop box: drag the body to move it, drag a corner to resize.
