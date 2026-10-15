@@ -13,6 +13,7 @@ import io
 import json
 import time
 import uuid
+import zipfile
 from contextlib import asynccontextmanager
 from urllib.parse import quote
 
@@ -46,11 +47,12 @@ async def lifespan(app: FastAPI):
     )
     try:
         state["ref_store"] = ReferenceImageStore(settings.dataset_zip_path)
-    except FileNotFoundError:
+    except (FileNotFoundError, zipfile.BadZipFile):
         # The new gallery's reference images mostly live outside the old
-        # ePillID-only zip (DailyMed/C3PI/etc. sources) -- missing this zip
-        # just means thumbnails are unavailable, not that serving is broken.
-        print(f"[startup] No reference-image zip at {settings.dataset_zip_path} -- "
+        # ePillID-only zip (DailyMed/C3PI/etc. sources) -- missing (or, e.g.,
+        # an un-pulled git-lfs pointer file instead of the real zip) just
+        # means thumbnails are unavailable, not that serving is broken.
+        print(f"[startup] No usable reference-image zip at {settings.dataset_zip_path} -- "
               "predictions will omit thumbnails.")
         state["ref_store"] = None
     state["drug_names"] = DrugNameLookup()

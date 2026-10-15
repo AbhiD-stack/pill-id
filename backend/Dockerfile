@@ -7,6 +7,7 @@ ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/opt/hf-cache \
     MODEL_ARTIFACTS_DIR=/artifacts \
     DATASET_ZIP_PATH=/artifacts/ePillID_data.zip \
+    LORA_ADAPTER_DIR=/artifacts/dinov2_projection_head/lora_adapter \
     DEVICE=cpu
 
 WORKDIR /app
@@ -38,6 +39,5 @@ RUN python -c "from transformers import AutoModel, AutoImageProcessor; \
     AutoImageProcessor.from_pretrained('facebook/dinov2-large'); \
     AutoModel.from_pretrained('facebook/dinov2-large')"
 
-# Hugging Face requires port 7860
-EXPOSE 7860
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7860"]
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
