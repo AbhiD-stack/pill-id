@@ -196,7 +196,11 @@ export default function ImageCapture({
               because it silently failed on some devices (camera permission /
               HTTPS quirks varied by browser), confusing doctors testing the
               app into thinking the scanner was broken when this button (the
-              one that always works) was sitting right next to it. */}
+              one that always works) was sitting right next to it.
+              No `capture` attribute on the input below -- on several mobile
+              browsers that attribute skips the native picker entirely and
+              jumps straight to the camera, hiding the gallery option this
+              button is supposed to offer. */}
           <button
             onClick={() => fileInputRef.current?.click()}
             className="w-full px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition"
@@ -217,7 +221,6 @@ export default function ImageCapture({
             ref={fileInputRef}
             type="file"
             accept="image/*"
-            capture="environment"
             onChange={handleFileSelect}
             className="hidden"
           />
