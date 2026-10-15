@@ -20,8 +20,21 @@ from typing import Optional
 
 from PIL import Image, ImageOps
 
+import os
+
 try:
     import pytesseract
+
+    # pytesseract looks for "tesseract" on PATH by default, which is a
+    # common source of silent failure on Windows (the installer doesn't
+    # always add itself to PATH, and a new PowerShell window is needed
+    # either way for a PATH change to take effect). TESSERACT_CMD lets the
+    # exact binary location be set explicitly instead of fighting PATH --
+    # set it in backend/.env or via $env:TESSERACT_CMD if the automatic
+    # PATH detection doesn't pick it up.
+    _tesseract_cmd = os.environ.get("TESSERACT_CMD")
+    if _tesseract_cmd:
+        pytesseract.pytesseract.tesseract_cmd = _tesseract_cmd
 except ImportError:  # OCR is optional; degrade to embedding-only scoring.
     pytesseract = None
 
