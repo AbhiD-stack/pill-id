@@ -584,6 +584,11 @@ function ResultsView({
                 <div className="min-w-0 flex-1">
                   <p className="font-bold text-slate-900 text-sm truncate">{m.drug_name || m.label}</p>
                   <p className="text-[11px] text-slate-400 font-mono truncate">NDC: {m.ndc || "N/A"}</p>
+                  {m.also_sold_as.length > 0 && (
+                    <p className="text-[11px] text-slate-500 truncate" title={m.also_sold_as.join(", ")}>
+                      Also sold as: {m.also_sold_as.join(", ")}
+                    </p>
+                  )}
                   {(m.imprint || m.color || m.shape) && (
                     <p className="text-[11px] text-slate-500 truncate">
                       {[m.imprint && `Imprint: ${m.imprint}`, m.color, m.shape].filter(Boolean).join(" · ")}

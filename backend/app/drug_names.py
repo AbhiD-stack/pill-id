@@ -48,24 +48,69 @@ def display_ndc(label: str) -> Optional[str]:
     return label if _NDC_RE.match(label) else None
 
 
+_COLOR_WORDS = ("white", "yellow", "orange", "pink", "red", "brown", "blue", "green",
+                "purple", "gray", "turquoise", "black")
+
+
+def _color_set(color: Optional[str]) -> tuple[str, ...]:
+    """'BLUE(light blue),RED' / 'red, blue' -> ('blue', 'red')"""
+    c = re.sub(r"\([^)]*\)", "", (color or "").lower())
+    return tuple(sorted({w for w in _COLOR_WORDS if w in c}))
+
+
+def _shape_word(shape: Optional[str]) -> str:
+    """'HEXAGON (6 SIDED)' / 'capsule ' -> 'hexagon' / 'capsule'"""
+    return re.sub(r"[^a-z]", "", re.sub(r"\([^)]*\)", "", (shape or "").lower()))
+
+
 def pill_key(label: str, info: Optional[DrugInfo]) -> tuple:
-    """Identity of the physical pill. The same pill is often listed under
-    several NDCs (package sizes, repackagers: 70000-0312, 70000-0312-1, ...);
-    results keep only the first of each so every slot is a different pill."""
-    if not info:
-        return ("label", label)
-    norm = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
-    return (norm(info.get("name")), norm(info.get("imprint")), norm(info.get("color")), norm(info.get("shape")))
+    """Identity of the physical pill. The same pill is often listed many
+    times: package sizes (70000-0312, 70000-0312-1), repackagers, and store
+    brands selling one manufacturer's pill under different names (Leader /
+    TopCare / DG Health "Migraine Relief" are all the same green-and-white
+    "M" pill). A pill is identified by what's physically on it -- imprint,
+    colors, shape -- regardless of name, spelling, word order or casing.
+    Pills without an imprint can't be told apart that way, so for those the
+    name stays part of the key; labels with no info at all group by NDC
+    product code (package variants of one product)."""
+    if info:
+        imprint = tuple(sorted(_imprint_tokens(info.get("imprint"))))
+        if imprint:
+            return ("pill", imprint, _color_set(info.get("color")), _shape_word(info.get("shape")))
+        norm = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
+        return ("named", norm(info.get("name")), _color_set(info.get("color")), _shape_word(info.get("shape")))
+    m = re.match(r"^(\d{4,5}-\d{3,4})(-\d{1,2})?$", label)
+    return ("product", m.group(1)) if m else ("label", label)
+
+
+def group_pills(rows: list, key=lambda row: pill_key(row[0], row[1])) -> list[tuple]:
+    """[(first row of each physical pill, [the other rows for that pill]), ...]
+    in order of first appearance."""
+    groups: dict[tuple, tuple] = {}
+    for row in rows:
+        k = key(row)
+        if k in groups:
+            groups[k][1].append(row)
+        else:
+            groups[k] = (row, [])
+    return list(groups.values())
 
 
 def dedupe_pills(rows: list, key=lambda row: pill_key(row[0], row[1])) -> list:
-    seen, out = set(), []
-    for row in rows:
-        k = key(row)
-        if k not in seen:
-            seen.add(k)
-            out.append(row)
-    return out
+    return [first for first, _ in group_pills(rows, key)]
+
+
+def other_names(primary: Optional[DrugInfo], others: list[Optional[DrugInfo]], limit: int = 4) -> list[str]:
+    """Distinct names the same pill is also sold under (for "also sold as")."""
+    norm = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
+    seen = {norm((primary or {}).get("name"))}
+    names = []
+    for info in others:
+        name = (info or {}).get("name")
+        if name and norm(name) not in seen:
+            seen.add(norm(name))
+            names.append(name)
+    return names[:limit]
 
 
 def _imprint_tokens(s: Optional[str]) -> list[str]:
@@ -99,6 +144,10 @@ class DrugNameLookup:
                 f"[drug_names] No name table at {table_path}; predictions will "
                 "show NDC codes only. Run scripts/build_ndc_names.py to generate it."
             )
+        # physical pill -> its labels, for "also sold as" names.
+        self._by_pill: dict[tuple, list[str]] = {}
+        for label, info in self._table.items():
+            self._by_pill.setdefault(pill_key(label, info), []).append(label)
 
     def lookup(self, ref_path: str) -> Optional[DrugInfo]:
         return self._table.get(ndc_from_ref_path(ref_path))
@@ -106,6 +155,13 @@ class DrugNameLookup:
     def lookup_by_label(self, label: str) -> Optional[DrugInfo]:
         """Preferred lookup for the new gallery -- see module docstring."""
         return self._table.get(label)
+
+    def also_sold_as(self, label: str, info: Optional[DrugInfo], limit: int = 4) -> list[str]:
+        """Other names the same physical pill is listed under."""
+        if not info:
+            return []
+        same = self._by_pill.get(pill_key(label, info), [])
+        return other_names(info, [self._table[l] for l in same if l != label], limit)
 
     def search_by_name(self, query: str, limit: int = 20, imprint: Optional[str] = None
                        ) -> list[tuple[str, DrugInfo]]:
@@ -207,6 +263,13 @@ class DrugNameLookup:
                 scored.append((label, info, count))
         scored.sort(key=lambda row: (-row[2], unmentioned.get(row[0], 0)))
         return dedupe_pills(scored)[:limit]
+
+    @property
+    def imprint_vocab(self) -> set[str]:
+        """Every token that appears in some known imprint (uppercase)."""
+        if not hasattr(self, "_vocab"):
+            self._vocab = {t.upper() for info in self._table.values() for t in _imprint_tokens(info.get("imprint"))}
+        return self._vocab
 
     @property
     def size(self) -> int:

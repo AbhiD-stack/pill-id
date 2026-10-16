@@ -228,3 +228,6 @@ backend/node_modules/
 # Reference-image thumbnails built locally by scripts/collect_thumbnails.py
 # (~1.2GB) -- local-only, never committed. See that script's docstring.
 backend/app/data/thumbnails/
+# progress file from scripts/fill_missing_drug_info.py
+backend/app/data/ndc_names.fill_checked.json
+backend/app/data/ndc_names.checked.json

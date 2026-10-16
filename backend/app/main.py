@@ -26,8 +26,8 @@ from PIL import Image, UnidentifiedImageError
 
 from classifier import DinoV2PillClassifier
 from config import get_settings
-from drug_names import DrugNameLookup, dedupe_pills, display_ndc, pill_key
-from imprint_match import read_imprint_text, score_imprint_match
+from drug_names import DrugNameLookup, dedupe_pills, display_ndc, ndc_from_ref_path, pill_key
+from imprint_match import ocr_engine, read_imprint_text, score_imprint_match
 from imprint_vision import read_imprint_with_vision, vision_available
 from reference_images import ReferenceImageStore, map_to_zip_path
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
@@ -68,7 +68,8 @@ async def lifespan(app: FastAPI):
     if vision_available():
         print(f"[startup] Imprint reading: {settings.imprint_vision_model} (photos are sent to the Anthropic API).")
     else:
-        print("[startup] Imprint reading: Tesseract only (set ANTHROPIC_API_KEY for the much better vision reader).")
+        print(f"[startup] Imprint reading: {ocr_engine()} (free, local)."
+              + (" Run `pip install easyocr` for a much better free reader." if ocr_engine() != "easyocr" else ""))
 
     print("[startup] Loading model... (first run downloads the DINOv2 backbone)")
     state["classifier"] = DinoV2PillClassifier(
@@ -184,6 +185,10 @@ async def predict(
     file_back: UploadFile = File(None),
     rx_or_otc: str | None = Form(None),  # "RX" | "OTC" | None/omitted == "don't know"
     imprint: str | None = Form(None),  # imprint the user typed/confirmed, e.g. "L 5"
+    # True when the user went through the imprint step. With no imprint it
+    # means "this pill has no letters/numbers" (an empty form field arrives
+    # as None, so emptiness alone can't say that).
+    imprint_confirmed: bool = Form(False),
 ):  # file = front/primary side (required); file_back = optional reverse side.
     # Set the bypass cookie to destroy the localtunnel landing wall permanently
     response.set_cookie(key="bypass-tunnel-reminder", value="true", path="/")
@@ -214,7 +219,11 @@ async def predict(
     query_embs = clf.embed_images(images)
     pool = clf.predict_topk_from_embeddings(query_embs, k=settings.rerank_pool_size, rx_or_otc=rx_or_otc)
 
-    if imprint and imprint.strip():
+    if imprint_confirmed and not (imprint or "").strip():
+        # The user confirmed the pill has no imprint: don't let OCR misreads
+        # of a blank pill steer the match.
+        ocr_text, imprint_source, imprint_weight = None, None, 0.0
+    elif imprint and imprint.strip():
         # User-typed or user-confirmed imprint: trusted, weighted heavily,
         # and used to pull in imprint matches the visual search missed.
         ocr_text = imprint.strip()
@@ -232,7 +241,7 @@ async def predict(
         # split across the front and back faces (e.g. maker mark on one,
         # strength on the other), so a single-side read would miss half the
         # signal.
-        ocr_candidates = [t for t in (read_imprint_text(img) for img in images) if t]
+        ocr_candidates = [t for t in (read_imprint_text(img, drug_names.imprint_vocab) for img in images) if t]
         ocr_text = " ".join(ocr_candidates) if ocr_candidates else None
         imprint_source = "ocr" if ocr_text else None
         imprint_weight = settings.imprint_fusion_weight
@@ -267,8 +276,11 @@ async def predict(
                 # would show a hash like "97121f6cbb03..." as the "NDC" even
                 # when the real name/imprint/color lookup above succeeded
                 # fine via the label).
-                "ndc": display_ndc(p.label),
+                # ePillID labels are content hashes; their image filenames
+                # carry the real NDC.
+                "ndc": display_ndc(p.label) or display_ndc(ndc_from_ref_path(p.ref_path)),
                 "name": info.get("name") if info else None,
+                "also_sold_as": drug_names.also_sold_as(p.label, info),
                 "imprint": info.get("imprint") if info else None,
                 "color": info.get("color") if info else None,
                 "shape": info.get("shape") if info else None,
@@ -325,7 +337,8 @@ async def read_imprint(file: UploadFile = File(...), file_back: UploadFile = Fil
     sides = read_imprint_with_vision(images, get_settings().imprint_vision_model)
     source = "vision"
     if sides is None:
-        reads = [read_imprint_text(img) or "" for img in images]
+        vocab = state["drug_names"].imprint_vocab
+        reads = [read_imprint_text(img, vocab) or "" for img in images]
         sides = (reads[0], reads[1] if len(reads) > 1 else "")
         source = "ocr"
     return {"side_1": sides[0], "side_2": sides[1], "source": source}
@@ -433,6 +446,7 @@ def _build_search_result(label: str, info: dict) -> dict:
         "label": label,
         "ndc": display_ndc(label),
         "name": info.get("name"),
+        "also_sold_as": state["drug_names"].also_sold_as(label, info),
         "imprint": info.get("imprint"),
         "color": info.get("color"),
         "shape": info.get("shape"),

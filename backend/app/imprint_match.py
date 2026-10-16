@@ -38,6 +38,47 @@ try:
 except ImportError:  # OCR is optional; degrade to embedding-only scoring.
     pytesseract = None
 
+# EasyOCR: free, runs locally on the PyTorch the model already uses, and
+# reads pill imprints far better than Tesseract -- measured on 150 real
+# consumer pill photos from ePillID: 30% vs 4% got at least one imprint
+# token right. Preferred when installed (`pip install easyocr`; it fetches
+# its ~100 MB of model files once, on first use).
+try:
+    import easyocr
+except ImportError:
+    easyocr = None
+_easy_reader = None
+# Measured on the same 150 photos, with the known-imprint vocabulary filter
+# read_imprint_text applies: 4 rotations -> 30% correct but 0.93 wrong
+# tokens/photo; upright + upside-down -> 25% correct, 0.37 wrong, half the
+# time. The read pre-fills boxes the user has to check, so fewer wrong
+# suggestions beats a few more right ones.
+_EASY_ROTATIONS = (0, 180)
+_EASY_MIN_CONFIDENCE = 0.4
+_EASY_LONG_SIDE = 800  # resize target: small crops upscaled, large ones shrunk for speed
+
+
+def ocr_engine() -> str:
+    if easyocr is not None:
+        return "easyocr"
+    return "tesseract" if pytesseract is not None else "none"
+
+
+def _easyocr_tokens(image: Image.Image) -> set[str]:
+    global _easy_reader
+    import numpy as np
+    if _easy_reader is None:
+        _easy_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+    scale = _EASY_LONG_SIDE / max(image.size)
+    img = image.resize((round(image.width * scale), round(image.height * scale)), Image.LANCZOS)
+    tokens: set[str] = set()
+    for rot in _EASY_ROTATIONS:
+        arr = np.array(img.rotate(rot, expand=True))
+        for _, text, conf in _easy_reader.readtext(arr, allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"):
+            if conf >= _EASY_MIN_CONFIDENCE:
+                tokens.update(_TOKEN_RE.findall(text.upper()))
+    return tokens
+
 _TOKEN_RE = re.compile(r"[A-Z0-9]+")
 
 
@@ -89,18 +130,35 @@ def _ocr_tokens(processed: Image.Image, psm: str) -> set[str]:
     return tokens
 
 
-def read_imprint_text(image: Image.Image) -> Optional[str]:
-    """Best-effort OCR read of the query image. Returns None if OCR is unavailable
-    or nothing legible was found above the confidence floor."""
-    if pytesseract is None:
-        return None
+def _tesseract_tokens(image: Image.Image) -> set[str]:
     try:
         processed = _preprocess_for_ocr(image)
     except Exception:
-        return None
+        return set()
     tokens: set[str] = set()
     for psm in _PSM_MODES:
         tokens |= _ocr_tokens(processed, psm)
+    return tokens
+
+
+def read_imprint_text(image: Image.Image, vocab: Optional[set[str]] = None) -> Optional[str]:
+    """Best-effort OCR read of the query image (EasyOCR if installed, else
+    Tesseract). vocab, when given, keeps only tokens that appear in some
+    known imprint -- OCR on a pill photo produces stray misreads, and a
+    token no pill carries can't help identify one. Returns None if OCR is
+    unavailable or nothing usable was read."""
+    try:
+        if easyocr is not None:
+            tokens = _easyocr_tokens(image)
+        elif pytesseract is not None:
+            tokens = _tesseract_tokens(image)
+        else:
+            return None
+    except Exception as e:
+        print(f"[imprint_match] OCR failed: {e!r}")
+        return None
+    if vocab is not None:
+        tokens = {t for t in tokens if t in vocab}
     return " ".join(sorted(tokens)) if tokens else None
 
 

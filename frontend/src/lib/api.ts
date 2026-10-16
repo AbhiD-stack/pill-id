@@ -2,6 +2,8 @@ export type PredictionResult = {
   label: string;
   ndc: string | null;
   name: string | null;
+  // Other names the same physical pill is listed under (store brands etc.).
+  also_sold_as?: string[];
   imprint: string | null;
   color: string | null;
   shape: string | null;
@@ -46,6 +48,7 @@ export type SearchResult = {
   label: string;
   ndc: string | null;
   name: string | null;
+  also_sold_as?: string[];
   imprint: string | null;
   color: string | null;
   shape: string | null;
@@ -71,8 +74,11 @@ export async function predictPill(
   if (rxOrOtc) {
     formData.append("rx_or_otc", rxOrOtc);
   }
-  if (imprint && imprint.trim()) {
-    formData.append("imprint", imprint.trim());
+  // imprint: the user-confirmed imprint ("" = the user says there is none);
+  // null/undefined = no imprint step (the server reads the photo itself).
+  if (imprint !== null && imprint !== undefined) {
+    formData.append("imprint_confirmed", "true");
+    if (imprint.trim()) formData.append("imprint", imprint.trim());
   }
 
   const response = await fetch(`${apiBase}/api/predict`, {
@@ -160,6 +166,7 @@ export type PillMatch = {
   label: string;
   ndc: string | null;
   drug_name: string | null;
+  also_sold_as: string[];
   imprint: string | null;
   color: string | null;
   shape: string | null;
@@ -212,6 +219,7 @@ export async function identifyPill(
       label: p.label,
       ndc: p.ndc,
       drug_name: p.name && p.name.trim() !== "" ? p.name : null,
+      also_sold_as: p.also_sold_as ?? [],
       imprint: p.imprint,
       color: p.color,
       shape: p.shape,

@@ -89,6 +89,8 @@ def resolve(token: str, rx_cache: dict[str, str | None]) -> tuple[str, dict | No
             "rxcui": rxcui,
             "imprint": props.get("IMPRINT_CODE") or None,
             "color": props.get("COLORTEXT") or None,
+            "shape": props.get("SHAPETEXT") or None,
+            "score_marks": props.get("SCORE") or None,
             "status": props.get("NDC_STATUS") or None,
         }
     return token, None

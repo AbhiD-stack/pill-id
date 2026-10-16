@@ -301,6 +301,11 @@ export default function PillSearchPanel({
               <div className="min-w-0 flex-1">
                 <p className="font-bold text-slate-900 text-sm truncate">{r.name || r.label}</p>
                 <p className="text-[11px] text-slate-400 font-mono truncate">NDC: {r.ndc || "N/A"}</p>
+                {r.also_sold_as && r.also_sold_as.length > 0 && (
+                  <p className="text-[11px] text-slate-500 truncate" title={r.also_sold_as.join(", ")}>
+                    Also sold as: {r.also_sold_as.join(", ")}
+                  </p>
+                )}
                 {(r.imprint || r.color || r.shape) && (
                   <p className="text-[11px] text-slate-500 truncate">
                     {[r.imprint && `Imprint: ${r.imprint}`, r.color, r.shape].filter(Boolean).join(" · ")}
