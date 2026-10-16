@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { searchByName, searchByAppearance, type SearchResult } from "@/lib/api";
 import PillThumb from "./PillThumb";
+import AddToMedsButton from "./AddToMedsButton";
 import { SHAPE_OPTIONS, COLOR_OPTIONS, SCORE_MARK_OPTIONS, SCORE_MARK_LABELS, shapeIconPath, scoreMarkLines } from "@/lib/pillAppearance";
 
 type Mode = "name" | "appearance";
@@ -31,6 +32,8 @@ export default function PillSearchPanel({
   compact = false,
   onSelect,
   selectLabel = "Select",
+  addToMeds = false,
+  onAdded,
 }: {
   defaultMode?: Mode;
   /** Scanner's "don't see your pill?" fallback only offers appearance
@@ -43,6 +46,9 @@ export default function PillSearchPanel({
       caller (e.g. "Save as my pill" in the scanner). */
   onSelect?: (result: SearchResult) => void;
   selectLabel?: string;
+  /** Show "+ Add to my medicines" on each result. */
+  addToMeds?: boolean;
+  onAdded?: () => void;
 }) {
   const [mode, setMode] = useState<Mode>(allowNameSearch ? defaultMode : "appearance");
   const [nameQuery, setNameQuery] = useState("");
@@ -319,6 +325,11 @@ export default function PillSearchPanel({
                   >
                     {selectLabel}
                   </button>
+                )}
+                {addToMeds && (
+                  <div className="mt-2">
+                    <AddToMedsButton drugName={r.name || r.label} ndc={r.ndc} onAdded={onAdded} />
+                  </div>
                 )}
               </div>
             </div>

@@ -1,12 +1,31 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import Scanner from "@/components/Scanner";
 import PillSearchPanel from "@/components/PillSearchPanel";
-import { getSchedule, ScheduleEntry, getReferencePills, deleteReferencePill, updateReferencePill, ReferencePill } from "@/lib/db";
+import TodayView from "@/components/TodayView";
+import { useReminders } from "@/components/useReminders";
+import { speak } from "@/components/AudioAlert";
+import {
+  getSchedule, ScheduleEntry, getReferencePills, deleteReferencePill, updateReferencePill, ReferencePill,
+  getMedications, Medication,
+} from "@/lib/db";
 import { embedPhoto } from "@/lib/api";
-import { checkBeersCriteria, checkInteractions, BeersFlag, InteractionFlag } from "@/lib/safety";
+import {
+  checkBeersCriteria, checkInteractionsAmong, checkDuplicateIngredients, BeersFlag, InteractionFlag,
+  DuplicateIngredient,
+} from "@/lib/safety";
 import { buildQrPassportDataUrl } from "@/lib/pdf";
+
+// Large-text mode: scales every rem-based size in the app.
+const TEXT_KEY = "pillid.largeText";
+function readLargeText(): boolean {
+  try {
+    return localStorage.getItem(TEXT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 type TabType = "scan" | "schedule" | "safety" | "lookup" | "passport" | "export";
 
@@ -17,8 +36,25 @@ interface MainAppProps {
 export default function MainApp({ onResetSession }: MainAppProps) {
   const [activeTab, setActiveTab] = useState<TabType>("scan");
   const [schedule, setSchedule] = useState<ScheduleEntry[]>([]);
-  const [beersFlags, setBeersFlags] = useState<{ entry: ScheduleEntry; flag: BeersFlag }[]>([]);
+  const [meds, setMeds] = useState<Medication[]>([]);
+  const [beersFlags, setBeersFlags] = useState<{ med: Medication; flag: BeersFlag }[]>([]);
   const [interactionFlags, setInteractionFlags] = useState<InteractionFlag[]>([]);
+  const [duplicateFlags, setDuplicateFlags] = useState<DuplicateIngredient[]>([]);
+  const [largeText, setLargeText] = useState(false);
+  const [medsVersion, setMedsVersion] = useState(0);
+  const reminders = useReminders(medsVersion);
+  const onMedsChanged = useCallback(() => setMedsVersion((v) => v + 1), []);
+
+  useEffect(() => {
+    setLargeText(readLargeText());
+    // Open on Today when the user already has medicines set up.
+    getMedications().then((m) => { if (m.length > 0) setActiveTab("schedule"); });
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.style.fontSize = largeText ? "125%" : "";
+    try { localStorage.setItem(TEXT_KEY, largeText ? "1" : "0"); } catch { /* storage unavailable */ }
+  }, [largeText]);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [referencePills, setReferencePills] = useState<ReferencePill[]>([]);
 
@@ -28,6 +64,7 @@ export default function MainApp({ onResetSession }: MainAppProps) {
   useEffect(() => {
     if (activeTab === "schedule" || activeTab === "safety" || activeTab === "passport") {
       getSchedule().then(setSchedule);
+      getMedications().then(setMeds);
     }
     if (activeTab === "passport") {
       getReferencePills().then(setReferencePills);
@@ -60,38 +97,25 @@ export default function MainApp({ onResetSession }: MainAppProps) {
     return () => { cancelled = true; };
   }, [activeTab, referencePills]);
 
-  // Real Beers Criteria + drug-drug interaction check across everything
-  // currently scheduled (not just a single newly-scanned drug).
+  // Beers Criteria, drug-drug interactions and duplicate ingredients across
+  // all of the user's medicines.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const beers: { entry: ScheduleEntry; flag: BeersFlag }[] = [];
-      for (const entry of schedule) {
-        const flag = await checkBeersCriteria(entry.drugName);
-        if (flag) beers.push({ entry, flag });
+      const beers: { med: Medication; flag: BeersFlag }[] = [];
+      for (const med of meds) {
+        const flag = await checkBeersCriteria(med.drugName);
+        if (flag) beers.push({ med, flag });
       }
-
-      const seen = new Set<string>();
-      const interactions: InteractionFlag[] = [];
-      for (const entry of schedule) {
-        const others = schedule.filter((e) => e.id !== entry.id).map((e) => e.drugName);
-        const found = await checkInteractions(entry.drugName, others);
-        for (const f of found) {
-          const key = [f.drug_a, f.drug_b].sort().join("|");
-          if (!seen.has(key)) {
-            seen.add(key);
-            interactions.push(f);
-          }
-        }
-      }
-
+      const names = meds.map((m) => m.drugName);
       if (!cancelled) {
         setBeersFlags(beers);
-        setInteractionFlags(interactions);
+        setInteractionFlags(checkInteractionsAmong(names));
+        setDuplicateFlags(checkDuplicateIngredients(names));
       }
     })();
     return () => { cancelled = true; };
-  }, [schedule]);
+  }, [meds]);
 
   // Medication passport QR: encodes the real schedule as JSON directly in
   // the code (no name/DOB, no server round-trip) so a phone/clinic webcam
@@ -115,18 +139,44 @@ export default function MainApp({ onResetSession }: MainAppProps) {
         <div className="flex items-center space-x-3">
           <span className="text-2xl">💊</span>
           <div>
-            <h1 className="font-bold text-lg text-slate-900 tracking-tight">
-              Geriatric Medication Safety & Pill ID
-            </h1>
-            <p className="text-xs text-slate-500">Evaluation Portal</p>
+            <h1 className="font-bold text-lg text-slate-900 tracking-tight">Pill ID</h1>
+            <p className="text-xs text-slate-500">Medicine manager &amp; pill scanner</p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1 rounded-full font-medium shadow-sm">
-            System Active
-          </span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setLargeText((v) => !v)}
+            aria-pressed={largeText}
+            className={`px-3 py-2 rounded-xl text-sm font-bold border ${largeText ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-slate-700 border-slate-300"}`}
+            title="Larger text"
+          >
+            A<span className="text-lg">A</span>
+          </button>
         </div>
       </header>
+
+      {reminders.due && activeTab !== "schedule" && (
+        <div className={`mx-4 mt-4 p-4 rounded-2xl border-2 shadow-sm ${reminders.due.overdue ? "bg-red-50 border-red-400" : "bg-amber-50 border-amber-400"}`}>
+          <p className="text-lg font-bold text-slate-900">
+            🔔 {reminders.due.overdue ? "Missed: " : "Time for your "}{reminders.due.label.toLowerCase()} medicines
+          </p>
+          <p className="text-base text-slate-700 mt-1">{reminders.due.meds.join(", ")}</p>
+          <div className="grid grid-cols-3 gap-2 mt-3">
+            <button onClick={() => setActiveTab("schedule")} className="col-span-2 py-3 bg-indigo-600 text-white font-bold rounded-xl">
+              Open Today
+            </button>
+            <button onClick={reminders.dismiss} className="py-3 bg-white border border-slate-300 font-bold rounded-xl">
+              Later
+            </button>
+          </div>
+          <button
+            onClick={() => speak(`Time for your ${reminders.due!.label} medicines: ${reminders.due!.meds.join(", ")}`)}
+            className="mt-2 text-sm text-indigo-700 underline"
+          >
+            🔊 Read aloud
+          </button>
+        </div>
+      )}
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col p-6 max-w-3xl mx-auto w-full">
@@ -137,30 +187,16 @@ export default function MainApp({ onResetSession }: MainAppProps) {
         )}
 
         {activeTab === "schedule" && (
-          <div className="flex flex-col space-y-4">
-            <div>
-              <h2 className="text-xl font-bold text-slate-900">Medication Schedule</h2>
-              <p className="text-sm text-slate-500">Manage daily dosage times and prevent missed medications.</p>
-            </div>
-            {schedule.length === 0 ? (
-              <div className="p-12 text-center border-2 border-dashed border-slate-200 rounded-2xl bg-white shadow-sm text-slate-400">
-                No pills scheduled yet. Go to the Scan tab, identify a pill, and drag a match into a time bucket.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {schedule.map((entry) => (
-                  <div key={entry.id} className="p-4 bg-white border border-slate-200 rounded-xl shadow-sm flex justify-between items-center">
-                    <div className="min-w-0">
-                      <h3 className="font-semibold text-slate-800 truncate">{entry.drugName || "Unknown Pill"}</h3>
-                      <p className="text-xs text-slate-500 truncate">NDC: {entry.ndc || "N/A"}</p>
-                    </div>
-                    <span className="text-xs bg-blue-50 text-blue-700 px-3 py-1 rounded-lg border border-blue-200 font-medium capitalize">
-                      {entry.bucket}
-                    </span>
-                  </div>
-                ))}
+          <div className="space-y-4">
+            {reminders.permission === "default" && (
+              <div className="p-4 bg-indigo-50 border border-indigo-200 rounded-2xl flex items-center justify-between gap-3">
+                <p className="text-sm text-indigo-900">Get a notification on this device when it&apos;s time for your medicines.</p>
+                <button onClick={reminders.enableNotifications} className="shrink-0 px-4 py-2.5 bg-indigo-600 text-white font-bold rounded-xl text-sm">
+                  🔔 Turn on
+                </button>
               </div>
             )}
+            <TodayView onScan={() => setActiveTab("scan")} onChanged={onMedsChanged} />
           </div>
         )}
 
@@ -169,30 +205,43 @@ export default function MainApp({ onResetSession }: MainAppProps) {
             <div>
               <h2 className="text-xl font-bold text-slate-900">Safety & Interaction Check</h2>
               <p className="text-sm text-slate-500">
-                Scheduled medications are checked against a reference subset of the AGS Beers Criteria®
-                and a sample drug-drug interaction list.
+                Your medicines are checked against each other for dangerous interactions and duplicate ingredients,
+                and against cautions for older adults (AGS Beers Criteria®).
               </p>
             </div>
 
-            {schedule.length === 0 ? (
+            {meds.length === 0 ? (
               <div className="p-12 text-center border-2 border-dashed border-slate-200 rounded-2xl bg-white shadow-sm text-slate-400">
-                No pills scheduled yet. Go to the Scan tab first.
+                No medicines added yet. Add them on the Today tab or by scanning a pill.
               </div>
-            ) : beersFlags.length === 0 && interactionFlags.length === 0 ? (
+            ) : beersFlags.length === 0 && interactionFlags.length === 0 && duplicateFlags.length === 0 ? (
               <div className="p-5 bg-emerald-50 border border-emerald-200 rounded-2xl shadow-sm">
-                <h3 className="font-semibold text-emerald-800 mb-1">No flags found</h3>
+                <h3 className="font-semibold text-emerald-800 mb-1">No problems found</h3>
                 <p className="text-xs text-emerald-700">
-                  None of the {schedule.length} scheduled medication{schedule.length === 1 ? "" : "s"} matched this
-                  reference list, and no known interactions were found between them.
+                  None of your {meds.length} medicine{meds.length === 1 ? "" : "s"} matched our interaction,
+                  duplicate-ingredient or older-adult caution checks. These checks cover the most important known
+                  problems, not every possible one, so still review your list with your pharmacist.
                 </p>
               </div>
             ) : (
               <div className="space-y-3">
-                {beersFlags.map(({ entry, flag }) => (
-                  <div key={entry.id} className="p-4 bg-amber-50 border border-amber-300 rounded-xl shadow-sm">
+                {duplicateFlags.map((d) => (
+                  <div key={`dup-${d.ingredient}`} className="p-4 bg-red-50 border border-red-300 rounded-xl shadow-sm">
+                    <div className="flex justify-between items-start gap-3">
+                      <h3 className="font-semibold text-red-900 capitalize">Same ingredient twice: {d.ingredient}</h3>
+                      <span className="shrink-0 text-xs bg-red-200 text-red-900 px-2.5 py-1 rounded-full font-semibold">check dose</span>
+                    </div>
+                    <p className="text-xs text-red-800 mt-2">
+                      {d.drugs.join(" and ")} both contain {d.ingredient}. Taking them together can add up to too
+                      much. Ask your pharmacist whether you should take both.
+                    </p>
+                  </div>
+                ))}
+                {beersFlags.map(({ med, flag }) => (
+                  <div key={med.key} className="p-4 bg-amber-50 border border-amber-300 rounded-xl shadow-sm">
                     <div className="flex justify-between items-start gap-3">
                       <div>
-                        <h3 className="font-semibold text-amber-900">{entry.drugName}</h3>
+                        <h3 className="font-semibold text-amber-900">{med.drugName}</h3>
                         <p className="text-xs text-amber-700 mt-0.5">{flag.category}</p>
                       </div>
                       <span className="shrink-0 text-xs bg-amber-200 text-amber-900 px-2.5 py-1 rounded-full font-semibold capitalize">
@@ -218,8 +267,8 @@ export default function MainApp({ onResetSession }: MainAppProps) {
             )}
 
             <p className="text-[11px] text-slate-400">
-              This is a static, non-exhaustive reference list — it does not account for dose, duration, diagnosis,
-              or allergies, and is not a substitute for pharmacist or clinician review.
+              These checks don&apos;t account for dose, duration, diagnosis or allergies, and are not a substitute for
+              pharmacist or clinician review.
             </p>
           </div>
         )}
@@ -232,7 +281,7 @@ export default function MainApp({ onResetSession }: MainAppProps) {
                 No photo needed — search by name, or describe what the pill looks like.
               </p>
             </div>
-            <PillSearchPanel />
+            <PillSearchPanel addToMeds onAdded={onMedsChanged} />
           </div>
         )}
 
@@ -389,8 +438,8 @@ export default function MainApp({ onResetSession }: MainAppProps) {
           onClick={() => setActiveTab("schedule")}
           className={`flex flex-col items-center flex-1 py-1.5 transition ${activeTab === "schedule" ? "text-blue-600 font-semibold" : "text-slate-500 hover:text-slate-800"}`}
         >
-          <span className="text-xl">⏰</span>
-          <span className="text-[11px] mt-0.5">Schedule</span>
+          <span className="text-xl">✅</span>
+          <span className="text-[11px] mt-0.5">Today</span>
         </button>
 
         <button

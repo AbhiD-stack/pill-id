@@ -3,7 +3,7 @@
 
 import { useState } from "react";
 import { identifyPill, readImprint, submitFeedback, type PillMatch, type SearchResult } from "@/lib/api";
-import { addLogEntry, addScheduleEntry, addReferencePill, checkCompliance, getRecentDrugNames, getReferencePills, TimeOfDay } from "@/lib/db";
+import { addReferencePill, getMedications, getReferencePills } from "@/lib/db";
 import { scoreMyPills, judgeMyPillMatch, type MyPillVerdict } from "@/lib/myPills";
 import { fullSafetyCheck } from "@/lib/safety";
 import { speak, vibrate } from "./AudioAlert";
@@ -11,6 +11,7 @@ import { logTelemetry } from "@/lib/telemetry";
 import ImageCapture from "./ImageCapture";
 import PillSearchPanel from "./PillSearchPanel";
 import PillThumb from "./PillThumb";
+import AddToMedsButton from "./AddToMedsButton";
 
 type Stage = "capture-front" | "capture-back" | "imprint" | "identifying" | "results";
 type ImprintSource = "user" | "ocr" | null;
@@ -110,7 +111,7 @@ export default function Scanner() {
 
     // Safety check is best-effort and must never roll back a successful
     // identification just because it itself failed (e.g. the static
-    // beers_criteria.json/drug_interactions.json fetch hiccuped) -- that
+    // beers_criteria.json fetch hiccuped) -- that
     // used to share a try/catch with the identify call above, so any
     // failure here silently reset the whole screen back to the capture
     // step even though the match had already come back fine.
@@ -118,16 +119,23 @@ export default function Scanner() {
     if (top) {
       vibrate([100, 50, 100]);
       try {
-        const existing = await getRecentDrugNames(24 * 30);
-        const { beers, interactions } = await fullSafetyCheck(top.drug_name || top.label, existing);
-        if (beers) {
-          setSafetyNote(`⚠ Beers Criteria flag (${beers.risk_level}): ${beers.rationale} ${beers.recommendation}`);
-        } else if (interactions.length > 0) {
-          const i = interactions[0];
-          setSafetyNote(`⚠ Interaction flag (${i.severity}): ${i.description}`);
-        } else {
-          setSafetyNote(null);
+        // Checked against the medicines the user already takes.
+        const existing = (await getMedications()).map((m) => m.drugName);
+        const name = top.drug_name || top.label;
+        const { beers, interactions, duplicates } = await fullSafetyCheck(name, existing);
+        const notes: string[] = [];
+        for (const i of interactions) {
+          const other = i.drug_a === name ? i.drug_b : i.drug_a;
+          notes.push(`⚠ With your ${other}: ${i.description}`);
         }
+        for (const d of duplicates) {
+          const others = d.drugs.filter((x) => x !== name).join(", ");
+          notes.push(`⚠ Your ${others} also contains ${d.ingredient}. Taking both can mean too much of it.`);
+        }
+        if (beers) {
+          notes.push(`⚠ Caution for older adults (${beers.risk_level} risk): ${beers.rationale} ${beers.recommendation}`);
+        }
+        setSafetyNote(notes.length ? notes.join("\n") : null);
       } catch (err) {
         console.error("Safety check failed (non-fatal):", err);
         setSafetyNote(null);
@@ -154,25 +162,6 @@ export default function Scanner() {
     setMyPillVerdict(null);
     setStage("capture-front");
   };
-
-  async function scheduleDrop(match: PillMatch, bucket: TimeOfDay) {
-    await addScheduleEntry({
-      drugName: match.drug_name || match.label,
-      ndc: match.ndc ?? undefined,
-      bucket,
-    });
-    const now = new Date();
-    const onSchedule = checkCompliance(now, bucket);
-    await addLogEntry({
-      drugName: match.drug_name || match.label,
-      ndc: match.ndc ?? undefined,
-      scannedAt: now.getTime(),
-      bucket,
-      onSchedule,
-    });
-    vibrate(250);
-    resetScanner();
-  }
 
   async function saveToMyPills(info: {
     drugName: string;
@@ -329,7 +318,6 @@ export default function Scanner() {
           imprintFound={imprintFound}
           myPillVerdict={myPillVerdict}
           onChangeImprint={() => setStage("imprint")}
-          onDrop={scheduleDrop}
           onSaveReference={saveAsReference}
           onSaveFromSearch={saveFromSearch}
           onRetake={resetScanner}
@@ -351,7 +339,6 @@ function ResultsView({
   imprintFound,
   myPillVerdict,
   onChangeImprint,
-  onDrop,
   onSaveReference,
   onSaveFromSearch,
   onRetake,
@@ -367,7 +354,6 @@ function ResultsView({
   imprintFound: boolean | null;
   myPillVerdict: MyPillVerdict;
   onChangeImprint: () => void;
-  onDrop: (match: PillMatch, bucket: TimeOfDay) => void;
   onSaveReference: (match: PillMatch) => Promise<void>;
   onSaveFromSearch: (result: SearchResult) => Promise<void>;
   onRetake: () => void;
@@ -377,17 +363,6 @@ function ResultsView({
   const [showAppearanceSearch, setShowAppearanceSearch] = useState(false);
   const [showSaveSearch, setShowSaveSearch] = useState(false);
   const [savedFromSearch, setSavedFromSearch] = useState<string | null>(null);
-
-  function handleDragStart(e: React.DragEvent, match: PillMatch) {
-    e.dataTransfer.setData("text/plain", match.label);
-  }
-
-  function handleDrop(e: React.DragEvent, bucket: TimeOfDay) {
-    e.preventDefault();
-    const label = e.dataTransfer.getData("text/plain");
-    const matchToUse = matches.find((m) => m.label === label) || matches[0];
-    onDrop(matchToUse, bucket);
-  }
 
   async function sendFeedback(correct: boolean, reportedLabel?: string | null) {
     if (!predictionId || feedbackState === "sending" || feedbackState === "sent") return;
@@ -540,8 +515,8 @@ function ResultsView({
 
       {safetyNote && (
         <div className="bg-red-50 border-l-4 border-red-500 rounded-r-xl p-4 shadow-sm">
-          <div className="flex items-center justify-between">
-            <p className="text-sm text-red-900 font-medium">{safetyNote}</p>
+          <div className="flex items-start justify-between">
+            <p className="text-sm text-red-900 font-medium whitespace-pre-line">{safetyNote}</p>
             <button
               onClick={() => speak(safetyNote)}
               className="text-xs bg-red-100 hover:bg-red-200 text-red-800 font-bold px-2 py-1 rounded transition shrink-0 ml-2"
@@ -552,62 +527,17 @@ function ResultsView({
         </div>
       )}
 
-      {/* Time Slots Drop Zones */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <label className="text-sm font-bold text-slate-700 uppercase tracking-wider">
-            Drag Any Match Box to Schedule
-          </label>
-          <span className="text-xs text-slate-400">Drop into a time box below</span>
-        </div>
-
-        <div className="grid grid-cols-1 gap-3">
-          {(["morning", "noon", "night"] as TimeOfDay[]).map((bucket) => (
-            <div
-              key={bucket}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => handleDrop(e, bucket)}
-              className={`group relative overflow-hidden min-h-[80px] px-6 flex items-center justify-between rounded-2xl border-4 border-dashed transition-all shadow-md ${
-                bucket === "morning"
-                  ? "bg-amber-500 border-amber-300 text-white"
-                  : bucket === "noon"
-                    ? "bg-cyan-500 border-cyan-300 text-white"
-                    : "bg-indigo-600 border-indigo-300 text-white"
-              }`}
-            >
-              <div className="flex items-center gap-4">
-                <span className="text-3xl">
-                  {bucket === "morning" && "🌅"}
-                  {bucket === "noon" && "☀️"}
-                  {bucket === "night" && "🌙"}
-                </span>
-                <div>
-                  <p className="text-xl font-black capitalize tracking-wide">{bucket}</p>
-                  <p className="text-xs text-white/90 font-medium">Drop pill box here</p>
-                </div>
-              </div>
-              <div className="bg-white/20 px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider backdrop-blur-sm">
-                Target Box 📥
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
       {/* Square Match Cards Grid */}
       <div className="space-y-3 pt-2">
         <p className="text-sm font-bold text-slate-700 uppercase tracking-wider">
-          Top Matches <span className="text-xs font-normal text-slate-400 lowercase">(drag any square box to schedule)</span>
+          Top Matches
         </p>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {matches.map((m, idx) => (
             <div
               key={m.label}
-              draggable
-              onDragStart={(e) => handleDragStart(e, m)}
-              className="group flex flex-col justify-between min-w-0 rounded-2xl border-2 border-slate-200 hover:border-indigo-500 bg-white p-4 shadow-sm hover:shadow-md cursor-grab active:cursor-grabbing transition-all select-none relative"
-              title="Click and drag this box into a time bucket"
+              className="flex flex-col justify-between min-w-0 rounded-2xl border-2 border-slate-200 bg-white p-4 shadow-sm relative"
             >
               {idx === 0 && (
                 <span className="absolute top-2 right-2 bg-indigo-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
@@ -640,10 +570,10 @@ function ResultsView({
                 </div>
               </div>
 
-              <div className="mt-3 flex items-center justify-between gap-2">
-                <div className="flex-1 text-center bg-indigo-50 group-hover:bg-indigo-600 group-hover:text-white text-indigo-700 py-1.5 rounded-xl font-bold text-xs transition">
-                  💊 Drag Box
-                </div>
+              <div className="mt-3">
+                <AddToMedsButton drugName={m.drug_name || m.label} ndc={m.ndc} />
+              </div>
+              <div className="mt-2 flex items-center justify-end gap-2">
                 <button
                   onClick={() => speak(`${m.drug_name || m.label}, visual match ${(m.score * 100).toFixed(0)} percent`)}
                   className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
