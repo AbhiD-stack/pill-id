@@ -63,6 +63,29 @@ def _shape_word(shape: Optional[str]) -> str:
     return re.sub(r"[^a-z]", "", re.sub(r"\([^)]*\)", "", (shape or "").lower()))
 
 
+def color_agreement(colors: Optional[list[str]], fda_color: Optional[str]) -> Optional[float]:
+    """How well colors the user confirmed agree with the FDA record:
+    1 same colors, 0.5 some in common, 0 none, None if either is unknown."""
+    mine = {c.lower() for c in colors or [] if c}
+    theirs = set(_color_set(fda_color))
+    if not mine or not theirs:
+        return None
+    if mine == theirs:
+        return 1.0
+    return 0.5 if mine & theirs else 0.0
+
+
+def shape_agreement(shape: Optional[str], fda_shape: Optional[str]) -> Optional[float]:
+    """1 same shape, 0.5 oval vs capsule (the FDA records use these two
+    inconsistently for the same elongated tablets), 0 different, None unknown."""
+    a, b = _shape_word(shape), _shape_word(fda_shape)
+    if not a or not b:
+        return None
+    if a == b:
+        return 1.0
+    return 0.5 if {a, b} == {"oval", "capsule"} else 0.0
+
+
 # Words that don't identify a drug (forms, salts, marketing words).
 _STOP = {
     "tablet", "tablets", "capsule", "capsules", "oral", "extended", "release", "delayed", "film", "coated",
@@ -311,6 +334,25 @@ class DrugNameLookup:
                 scored.append((label, info, count))
         scored.sort(key=lambda row: (-row[2], unmentioned.get(row[0], 0)))
         return dedupe_pills(scored, key=lambda row: self.dedupe_key(row[0], row[1]))[:limit]
+
+    def labels_matching_appearance(self, labels, colors: Optional[list[str]], shape: Optional[str]) -> list[str]:
+        """Labels (from the given set, e.g. the model's) whose FDA color AND
+        shape agree with what the user confirmed. Unknown fields don't
+        exclude; a label with neither field known isn't returned."""
+        if not hasattr(self, "_appearance"):
+            self._appearance = {}
+            for l in labels:
+                info = self.display_info(str(l))
+                if info and (info.get("color") or info.get("shape")):
+                    self._appearance[str(l)] = (info.get("color"), info.get("shape"))
+        out = []
+        for l, (c, s) in self._appearance.items():
+            ca, sa = color_agreement(colors, c), shape_agreement(shape, s)
+            # A confirmed color must be on record; a missing shape record is
+            # common (~10%) and doesn't exclude.
+            if (ca == 1.0 if colors else ca is None) and (sa is None or sa >= 0.5) and (colors or sa is not None):
+                out.append(l)
+        return out
 
     @property
     def imprint_vocab(self) -> set[str]:

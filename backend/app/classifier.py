@@ -159,6 +159,22 @@ class DinoV2PillClassifier:
                     self._restricted_masks[cat] = mask
                     print(f"[classifier] Category mask for {cat}: {int(mask.sum())} labels.")
 
+    def add_to_gallery(self, embeddings: torch.Tensor, labels: List[str], paths: List[str]) -> int:
+        """Adds reference images found after training (real pill photos from
+        drug labels, see scripts/build_photo_gallery.py) to existing labels.
+        Must be embedded with this same model + adapter. Returns how many
+        were added; images for labels the gallery doesn't have are skipped."""
+        index = {str(l): i for i, l in enumerate(self.label_strings)}
+        keep = [i for i, l in enumerate(labels) if l in index]
+        if not keep or embeddings.shape[1] != self.ref_embeddings.shape[1]:
+            return 0
+        emb = F.normalize(embeddings[keep].float().to(self.device), dim=1)
+        idx = torch.tensor([index[labels[i]] for i in keep], device=self.device, dtype=self.ref_label_indices.dtype)
+        self.ref_embeddings = torch.cat([self.ref_embeddings, emb], dim=0)
+        self.ref_label_indices = torch.cat([self.ref_label_indices, idx], dim=0)
+        self.ref_abs_paths = np.concatenate([self.ref_abs_paths, np.array([paths[i] for i in keep])])
+        return len(keep)
+
     @torch.no_grad()
     def _embed(self, image: Image.Image) -> torch.Tensor:
         inputs = self.processor(images=image, return_tensors="pt")
@@ -278,10 +294,12 @@ class DinoV2PillClassifier:
         return ref_path
 
     @torch.no_grad()
-    def predictions_for_labels(self, query_embs: torch.Tensor, labels: List[str]) -> List[Prediction]:
+    def predictions_for_labels(self, query_embs: torch.Tensor, labels: List[str],
+                               top: Optional[int] = None) -> List[Prediction]:
         """Visual scores for specific labels (e.g. candidates found by imprint
         search that the visual top-k missed), scored exactly like
-        predict_topk_from_embeddings. Labels not in the gallery are skipped."""
+        predict_topk_from_embeddings. Labels not in the gallery are skipped.
+        top: keep only the best-scoring N (cheap even for thousands of labels)."""
         if not hasattr(self, "_label_index"):
             self._label_index = {str(l): i for i, l in enumerate(self.label_strings)}
         idxs = [self._label_index[l] for l in labels if l in self._label_index]
@@ -290,6 +308,9 @@ class DinoV2PillClassifier:
         per_image = [self._best_per_label(q.unsqueeze(0)) for q in query_embs]
         scores_by_label = torch.stack([s for s, _ in per_image], dim=0).mean(dim=0)
         sims = [s for _, s in per_image]
+        if top is not None and len(idxs) > top:
+            idx_t = torch.tensor(idxs, device=scores_by_label.device)
+            idxs = idx_t[scores_by_label[idx_t].topk(top).indices].tolist()
         return [
             Prediction(
                 label=str(self.label_strings[i]),

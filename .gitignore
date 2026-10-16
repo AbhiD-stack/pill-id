@@ -239,3 +239,7 @@ backend/thumbnail_preview.html
 
 # Users' scan photos and answers (private data)
 feedback/
+# built locally by scripts/build_photo_gallery.py
+backend/app/data/photo_gallery.pt
+backend/photo_gallery_rejected.txt
+backend/eval_results.csv

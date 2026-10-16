@@ -2,7 +2,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { identifyPill, readImprint, submitFeedback, type PillMatch, type SearchResult } from "@/lib/api";
+import { identifyPill, readImprint, submitFeedback, type PillLook, type PillMatch, type SearchResult } from "@/lib/api";
 import { addReferencePill, getMedications, getReferencePills } from "@/lib/db";
 import { scoreMyPills, judgeMyPillMatch, type MyPillVerdict } from "@/lib/myPills";
 import { fullSafetyCheck } from "@/lib/safety";
@@ -12,6 +12,7 @@ import ImageCapture from "./ImageCapture";
 import PillSearchPanel from "./PillSearchPanel";
 import PillThumb from "./PillThumb";
 import AddToMedsButton from "./AddToMedsButton";
+import LookPicker from "./LookPicker";
 
 type Stage = "capture-front" | "capture-back" | "imprint" | "identifying" | "results";
 type ImprintSource = "user" | "ocr" | null;
@@ -36,6 +37,8 @@ export default function Scanner() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [queryEmbeddings, setQueryEmbeddings] = useState<number[][] | null>(null);
   const [myPillVerdict, setMyPillVerdict] = useState<MyPillVerdict>(null);
+  const [look, setLook] = useState<PillLook>({ colors: [], shape: null });
+  const [lookSuggestion, setLookSuggestion] = useState<PillLook | null>(null);
 
   const handleFrontCaptured = (canvas: HTMLCanvasElement) => {
     setFrontCanvas(canvas);
@@ -53,11 +56,14 @@ export default function Scanner() {
     setImprintSide1("");
     setImprintSide2("");
     setImprintSuggestion(null);
+    setLook({ colors: [], shape: null });
+    setLookSuggestion(null);
     setStage("imprint");
     setImprintReading(true);
     try {
       const read = await readImprint(front, back);
       if (read.side_1 || read.side_2) setImprintSuggestion({ side_1: read.side_1, side_2: read.side_2 });
+      if (read.colors?.length || read.shape) setLookSuggestion({ colors: read.colors ?? [], shape: read.shape ?? null });
     } catch (err) {
       console.error("Imprint read failed (non-fatal):", err);
     } finally {
@@ -75,7 +81,7 @@ export default function Scanner() {
     setScanError(null);
     let result;
     try {
-      result = await identifyPill(front, 10, back, imprint);
+      result = await identifyPill(front, 10, back, imprint, look);
     } catch (err: any) {
       console.error("Scan failed:", err);
       setScanError(err?.message || String(err));
@@ -127,6 +133,8 @@ export default function Scanner() {
     setScanError(null);
     setQueryEmbeddings(null);
     setMyPillVerdict(null);
+    setLook({ colors: [], shape: null });
+    setLookSuggestion(null);
     setStage("capture-front");
   };
 
@@ -248,18 +256,21 @@ export default function Scanner() {
               />
             </label>
           </div>
+          <div className="border-t border-slate-200 pt-4">
+            <LookPicker value={look} onChange={setLook} suggestion={lookSuggestion} reading={imprintReading} />
+          </div>
           <button
             type="submit"
-            className="w-full px-4 py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition shadow-sm text-base"
+            className="w-full px-4 py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition shadow-lg text-lg"
           >
             Find my pill
           </button>
           <button
             type="button"
             onClick={() => runIdentify(frontCanvas, backCanvas, "")}
-            className="w-full text-sm text-slate-500 hover:text-slate-700 underline"
+            className="w-full py-2 text-base text-slate-600 hover:text-slate-800 underline"
           >
-            There are no letters or numbers
+            My pill has no letters or numbers — find it
           </button>
         </form>
       )}
@@ -282,6 +293,7 @@ export default function Scanner() {
           predictionId={predictionId}
           imprintSource={imprintSource}
           imprintFound={imprintFound}
+          lookUsed={look}
           myPillVerdict={myPillVerdict}
           onChangeImprint={() => setStage("imprint")}
           onSaveReference={saveAsReference}
@@ -318,6 +330,7 @@ function ResultsView({
   predictionId,
   imprintSource,
   imprintFound,
+  lookUsed,
   myPillVerdict,
   onChangeImprint,
   onSaveReference,
@@ -332,6 +345,7 @@ function ResultsView({
   predictionId: string | null;
   imprintSource: ImprintSource;
   imprintFound: boolean | null;
+  lookUsed: PillLook;
   myPillVerdict: MyPillVerdict;
   onChangeImprint: () => void;
   onSaveReference: (match: PillMatch) => Promise<void>;
@@ -514,6 +528,11 @@ function ResultsView({
           </span>
         ) : (
           <span>Searched by appearance only (no imprint).</span>
+        )}
+        {(lookUsed.colors.length > 0 || lookUsed.shape) && (
+          <span>
+            · {[...lookUsed.colors, lookUsed.shape].filter(Boolean).map((w) => w!.charAt(0) + w!.slice(1).toLowerCase()).join(", ")}
+          </span>
         )}
         <button onClick={onChangeImprint} className="text-indigo-700 font-semibold underline">
           {showMatchedImprint && ocrImprintRead ? "Change" : "Add the imprint"}

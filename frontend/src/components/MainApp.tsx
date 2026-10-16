@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import WelcomeNotice from "./WelcomeNotice";
 import Scanner from "@/components/Scanner";
 import PillSearchPanel from "@/components/PillSearchPanel";
 import TodayView from "@/components/TodayView";
@@ -134,6 +135,7 @@ export default function MainApp({ onResetSession }: MainAppProps) {
 
   return (
     <div className="flex-1 flex flex-col pb-28 bg-slate-50 text-slate-900 min-h-screen">
+      <WelcomeNotice />
       {/* Top Header */}
       <header className="px-6 py-4 bg-white border-b border-slate-200 flex justify-between items-center sticky top-0 z-40 shadow-sm">
         <div className="flex items-center space-x-3">

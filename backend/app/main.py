@@ -24,13 +24,15 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Respo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
+import torch
 
 from classifier import DinoV2PillClassifier
 from config import get_settings
 from collections import defaultdict
 
-from drug_names import DrugNameLookup, dedupe_pills, display_ndc, ndc_from_ref_path
+from drug_names import DrugNameLookup, color_agreement, dedupe_pills, display_ndc, ndc_from_ref_path, shape_agreement
 from pill_groups import PillGroups
+from pill_features import analyze as analyze_pill
 from imprint_match import ocr_engine, read_imprint_text, score_imprint_match, warm_up_ocr
 from imprint_vision import read_imprint_with_vision, vision_available
 from reference_images import ReferenceImageStore, map_to_zip_path
@@ -82,6 +84,7 @@ async def lifespan(app: FastAPI):
         lora_adapter_dir=settings.lora_adapter_dir,
         label_meta_path=settings.label_meta_path,
     )
+    _load_photo_gallery(state["classifier"], settings)
     try:
         state["ref_store"] = ReferenceImageStore(settings.dataset_zip_path)
     except (FileNotFoundError, zipfile.BadZipFile):
@@ -132,6 +135,34 @@ async def lifespan(app: FastAPI):
     yield
     if state["ref_store"] is not None:
         state["ref_store"].close()
+
+
+def _load_photo_gallery(clf: DinoV2PillClassifier, settings) -> None:
+    """Real pill photos found in drug labels after training, embedded by
+    scripts/build_photo_gallery.py, join the reference gallery so a pill
+    whose training images were only package art can be matched against a
+    photo of the pill itself."""
+    path = settings.photo_gallery_path
+    if not path.exists():
+        print("[startup] No extra photo gallery (run scripts/build_photo_gallery.py to add "
+              "the pill photos found in drug labels).")
+        return
+    try:
+        data = torch.load(path, map_location="cpu")
+        if data.get("model_signature") != model_signature(clf):
+            print(f"[startup] WARNING: {path.name} was built with a different model -- ignored. "
+                  "Rerun scripts/build_photo_gallery.py.")
+            return
+        n = clf.add_to_gallery(data["embeddings"], data["labels"], data["paths"])
+        print(f"[startup] Added {n} real pill photos from drug labels to the reference gallery.")
+    except Exception as e:  # a bad file must not stop the server
+        print(f"[startup] WARNING: couldn't load {path} ({e!r}) -- continuing without it.")
+
+
+def model_signature(clf: DinoV2PillClassifier) -> str:
+    """Identifies the model + gallery an embedding file was made with, so
+    embeddings from another model version are never mixed in."""
+    return f"{clf.ref_embeddings.shape[1]}:{len(clf.label_strings)}:{float(clf.ref_embeddings[0].sum()):.6f}"
 
 
 def attach_pill_groups(clf: DinoV2PillClassifier, names: DrugNameLookup) -> PillGroups:
@@ -246,6 +277,29 @@ def _check_artifacts(clf: DinoV2PillClassifier, drug_names: DrugNameLookup, sett
 app = FastAPI(title="Pill ID API", version="0.1.0", lifespan=lifespan)
 
 
+_hits: dict[str, list[float]] = defaultdict(list)
+
+
+@app.middleware("http")
+async def rate_limit(request, call_next):
+    """Simple per-device limit on the expensive endpoints."""
+    if request.method == "POST" and request.url.path in ("/api/predict", "/api/read-imprint", "/api/embed"):
+        who = (request.headers.get("cf-connecting-ip")
+               or request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+               or (request.client.host if request.client else "?"))
+        now = time.time()
+        recent = [t for t in _hits[who] if now - t < 60]
+        if len(recent) >= get_settings().rate_limit_per_minute:
+            return Response('{"detail":"Too many scans in a minute. Please wait a moment and try again."}',
+                            status_code=429, media_type="application/json")
+        recent.append(now)
+        _hits[who] = recent
+        if len(_hits) > 5000:  # forget idle devices
+            for k in [k for k, v in _hits.items() if not v or now - v[-1] > 60]:
+                _hits.pop(k, None)
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # <-- Make sure this is exactly ["*"]
@@ -345,7 +399,8 @@ class Identification:
 
 def identify(clf: DinoV2PillClassifier, drug_names: DrugNameLookup, images: list[Image.Image],
              imprint: str | None = None, imprint_confirmed: bool = False,
-             rx_or_otc: str | None = None, query_embs=None) -> Identification:
+             rx_or_otc: str | None = None, query_embs=None,
+             colors: list[str] | None = None, shape: str | None = None) -> Identification:
     """The whole identification pipeline, shared by /api/predict and
     scripts/eval_real_photos.py so the evaluation measures exactly what the
     app does.
@@ -354,7 +409,12 @@ def identify(clf: DinoV2PillClassifier, drug_names: DrugNameLookup, images: list
     fusion: a user-confirmed imprint is trusted (weighted heavily, and its
     exact matches are added even if the visual search missed them); without
     one, OCR on the photos gives a weak signal; a confirmed "no imprint"
-    uses none. Duplicate listings of one physical pill collapse to one row."""
+    uses none. Duplicate listings of one physical pill collapse to one row.
+
+    colors/shape the user confirmed work the same way, more gently: pills
+    whose FDA color and shape agree are added as candidates (best visual
+    score first) and get a small bonus; nothing is ruled out, since a
+    confirmed color can still be wrong under odd lighting."""
     settings = get_settings()
     if query_embs is None:  # callers may pass embed_images(images) they already computed
         query_embs = clf.embed_images(images)
@@ -369,7 +429,8 @@ def identify(clf: DinoV2PillClassifier, drug_names: DrugNameLookup, images: list
         in_pool = {p.label for p in pool}
         extra = [
             label for label, _, _ in drug_names.search_by_appearance(
-                imprint=text, limit=settings.imprint_candidate_count)
+                imprint=text, color=" ".join(colors or []) or None, shape=shape,
+                limit=settings.imprint_candidate_count)
             if label not in in_pool
         ]
         pool = pool + clf.predictions_for_labels(query_embs, extra)
@@ -380,13 +441,25 @@ def identify(clf: DinoV2PillClassifier, drug_names: DrugNameLookup, images: list
         text = " ".join(reads) if reads else None
         source, weight = ("ocr" if text else None), settings.imprint_fusion_weight
 
+    if colors or shape:
+        in_pool = {p.label for p in pool}
+        alike = [l for l in drug_names.labels_matching_appearance(clf.label_strings, colors, shape) if l not in in_pool]
+        pool = pool + clf.predictions_for_labels(query_embs, alike, top=settings.appearance_candidate_count)
+
     rows = []
     for p in pool:
         # The predicted label is the primary key; ePillID labels (content
         # hashes) fall back to the NDC in their image filename.
         info = drug_names.display_info(p.label, p.ref_path)
         match = score_imprint_match(text, info.get("imprint") if info else None)
-        rows.append((p, info, match, p.score + weight * match.score))
+        fused = p.score + weight * match.score
+        if colors:  # unknown on record counts half
+            ca = color_agreement(colors, info.get("color") if info else None)
+            fused += settings.confirmed_color_weight * (0.5 if ca is None else ca)
+        if shape:
+            sa = shape_agreement(shape, info.get("shape") if info else None)
+            fused += settings.confirmed_shape_weight * (0.5 if sa is None else sa)
+        rows.append((p, info, match, fused))
     rows.sort(key=lambda row: row[3], reverse=True)
     ranked = dedupe_pills(rows, key=lambda row: drug_names.dedupe_key(row[0].label, row[1]))
     # A result with no drug name and no NDC tells the user nothing; don't let
@@ -415,6 +488,8 @@ async def predict(
     # means "this pill has no letters/numbers" (an empty form field arrives
     # as None, so emptiness alone can't say that).
     imprint_confirmed: bool = Form(False),
+    colors: str | None = Form(None),  # colors the user confirmed, e.g. "RED,BLUE"
+    shape: str | None = Form(None),  # shape the user confirmed, e.g. "CAPSULE"
 ):  # file = front/primary side (required); file_back = optional reverse side.
     # Set the bypass cookie to destroy the localtunnel landing wall permanently
     response.set_cookie(key="bypass-tunnel-reminder", value="true", path="/")
@@ -433,8 +508,10 @@ async def predict(
     drug_names: DrugNameLookup = state["drug_names"]
 
     images = [image, back_image] if back_image is not None else [image]
+    color_list = [c.strip().upper() for c in (colors or "").split(",") if c.strip()][:2] or None
     ident = identify(clf, drug_names, images, imprint=imprint,
-                     imprint_confirmed=imprint_confirmed, rx_or_otc=rx_or_otc)
+                     imprint_confirmed=imprint_confirmed, rx_or_otc=rx_or_otc,
+                     colors=color_list, shape=(shape or "").strip().upper() or None)
     fused = ident.ranked[: settings.top_k]
     query_embs, ocr_text, imprint_source = ident.query_embs, ident.imprint_text, ident.imprint_source
 
@@ -521,7 +598,15 @@ async def read_imprint(file: UploadFile = File(...), file_back: UploadFile = Fil
         reads = [read_imprint_text(img, vocab) or "" for img in images]
         sides = (reads[0], reads[1] if len(reads) > 1 else "")
         source = "ocr"
-    return {"side_1": sides[0], "side_2": sides[1], "source": source}
+    # Color and shape read from the pixels (front photo), as suggestions.
+    features = None
+    try:
+        features = analyze_pill(images[0])
+    except Exception as e:  # never block the imprint step on this
+        print(f"[read-imprint] color/shape reading failed: {e!r}")
+    return {"side_1": sides[0], "side_2": sides[1], "source": source,
+            "colors": features.colors if features else [],
+            "shape": features.shape if features else None}
 
 
 @app.post("/api/embed")
@@ -696,7 +781,18 @@ def search_by_appearance(
     }
 
 
+# The web app itself, when built (`npm run build:static`): registered last so
+# every /api route above wins.
+_frontend = get_settings().frontend_dir
+if (_frontend / "index.html").exists():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/", StaticFiles(directory=_frontend, html=True), name="frontend")
+    print(f"[startup] Serving the web app from {_frontend}")
+
+
 if __name__ == "__main__":
     import uvicorn
     # Change it to this:
     uvicorn.run(app, host="127.0.0.1", port=8000)
+

@@ -8,7 +8,7 @@ import { SHAPE_OPTIONS, COLOR_OPTIONS, SCORE_MARK_OPTIONS, SCORE_MARK_LABELS, sh
 
 type Mode = "name" | "appearance";
 
-function ShapeIcon({ shape, size = 28 }: { shape: string; size?: number }) {
+export function ShapeIcon({ shape, size = 28 }: { shape: string; size?: number }) {
   const icon = shapeIconPath(shape);
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" className="shrink-0">

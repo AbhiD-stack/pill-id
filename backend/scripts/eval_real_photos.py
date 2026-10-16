@@ -19,11 +19,16 @@ gallery first; the pills keep their studio reference photos.
 C3PI) from the gallery, leaving only DailyMed package/label images -- the
 situation for most drugs, where there is no reference photo of the pill.
 
-For each photo, three conditions:
+For each photo, these conditions:
   A  photo only (user says there's no imprint)
   B  photo + the imprint the app's OCR reads, accepted unchanged
   C  photo + the correct imprint, as if the user typed it
+  D  photo + the color/shape the app reads from the photo, accepted unchanged
+  E  photo + the correct color/shape (FDA record), as if the user confirmed it
+  F  photo + correct imprint + correct color/shape
 A result counts as correct if it is the same physical pill (any listing).
+The extra pill-photo gallery (scripts/build_photo_gallery.py) is used like
+the server does; --no-photo-gallery leaves it out for a before/after.
 Per-photo results are written to backend/eval_results.csv.
 """
 from __future__ import annotations
@@ -50,7 +55,8 @@ from PIL import Image  # noqa: E402
 import main  # noqa: E402
 from classifier import DinoV2PillClassifier  # noqa: E402
 from config import get_settings  # noqa: E402
-from drug_names import DrugNameLookup, _imprint_tokens, ndc_from_ref_path, pill_key  # noqa: E402
+from drug_names import DrugNameLookup, _color_set, _imprint_tokens, ndc_from_ref_path, pill_key  # noqa: E402
+from pill_features import analyze as analyze_pill  # noqa: E402
 from imprint_match import ocr_engine, read_imprint_text  # noqa: E402
 
 _NDC = re.compile(r"^(\d{4,5})-(\d{3,4})")
@@ -113,6 +119,20 @@ def truth_imprint(n: str, names: DrugNameLookup, labels: set[str]) -> str | None
     return None
 
 
+def truth_appearance(n: str, names: DrugNameLookup, labels: set[str]) -> tuple[list[str] | None, str | None]:
+    """The FDA color(s) and shape on record for the true pill."""
+    colors, shape = None, None
+    for lbl in sorted(labels) + [n]:
+        info = names.display_info(lbl)
+        if not info:
+            continue
+        if colors is None and info.get("color"):
+            colors = [c.upper() for c in _color_set(info["color"])] or None
+        if shape is None and info.get("shape"):
+            shape = info["shape"].strip().upper()
+    return colors, shape
+
+
 def rank_of_truth(ident, names: DrugNameLookup, truth_labels: set[str], truth_keys: set[tuple]) -> int | None:
     truth_groups = {names.dedupe_key(l, None) for l in truth_labels}
     for i, (p, info, _m, _s) in enumerate(ident.ranked, 1):
@@ -128,6 +148,7 @@ def main_() -> int:
     ap.add_argument("--mode", choices=["strict", "package-only"], default="strict")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-ocr", action="store_true", help="skip condition B (OCR is the slow part)")
+    ap.add_argument("--no-photo-gallery", action="store_true", help="leave out app/data/photo_gallery.pt")
     args = ap.parse_args()
 
     settings = get_settings()
@@ -140,6 +161,8 @@ def main_() -> int:
 
     print("Loading the model exactly as the server does...")
     clf = load_classifier(settings)
+    if not args.no_photo_gallery:
+        main._load_photo_gallery(clf, settings)
     names = DrugNameLookup()
     main.attach_pill_groups(clf, names)  # same duplicate merging as the server
     main._check_artifacts(clf, names, settings)
@@ -160,8 +183,10 @@ def main_() -> int:
     print(f"{len(consumer)} consumer photos; {len(usable)} are of a pill still findable in this gallery; testing {len(sample)}.")
     print(f"OCR engine for condition B: {ocr_engine()}\n")
 
-    conds = ["A photo only", "B photo + OCR read, unchecked", "C photo + correct imprint"]
-    stats = {c: [0, 0, 0] for c in conds}  # top1, top5, n
+    conds = ["A photo only", "B photo + OCR read, unchecked", "C photo + correct imprint",
+             "D photo + color/shape read, unchecked", "E photo + correct color/shape",
+             "F correct imprint + color/shape"]
+    stats = {c: [0, 0, 0, 0] for c in conds}  # top1, top5, top10, n
     out_rows = []
     t0 = time.time()
     for i, r in enumerate(sample, 1):
@@ -177,17 +202,34 @@ def main_() -> int:
             conds[1]: None if args.no_ocr else (ocr or ""),
             conds[2]: real_imprint,
         }
-        rec = {"image": r["image_path"], "ndc": n, "true_imprint": real_imprint or "", "ocr_read": ocr or ""}
+        true_colors, true_shape = truth_appearance(n, names, truth_labels)
+        read = analyze_pill(img)
+        read_colors, read_shape = (read.colors, read.shape) if read else (None, None)
+        has_truth_look = bool(true_colors or true_shape)
+        appearance = {
+            conds[3]: (read_colors, read_shape) if read else None,
+            conds[4]: (true_colors, true_shape) if has_truth_look else None,
+            conds[5]: (true_colors, true_shape) if has_truth_look and real_imprint else None,
+        }
+        inputs[conds[3]] = ""
+        inputs[conds[4]] = ""
+        inputs[conds[5]] = real_imprint
+        rec = {"image": r["image_path"], "ndc": n, "true_imprint": real_imprint or "", "ocr_read": ocr or "",
+               "true_look": f"{','.join(true_colors or [])}/{true_shape or ''}",
+               "read_look": f"{','.join(read_colors or [])}/{read_shape or ''}"}
         for c, imprint in inputs.items():
-            if imprint is None:  # condition not applicable to this photo
+            look = appearance.get(c, (None, None))
+            if imprint is None or look is None:  # condition not applicable to this photo
                 rec[c] = ""
                 continue
-            ident = main.identify(clf, names, [img], imprint=imprint, imprint_confirmed=True, query_embs=embs)
+            ident = main.identify(clf, names, [img], imprint=imprint, imprint_confirmed=True, query_embs=embs,
+                                  colors=look[0] or None, shape=look[1])
             rank = rank_of_truth(ident, names, truth_labels, truth_keys)
             s = stats[c]
-            s[2] += 1
+            s[3] += 1
             s[0] += rank == 1
             s[1] += rank is not None and rank <= 5
+            s[2] += rank is not None and rank <= 10
             rec[c] = rank or ""
         out_rows.append(rec)
         if i % 25 == 0 or i == len(sample):
@@ -196,11 +238,11 @@ def main_() -> int:
 
     print(f"\nReal-world accuracy ({args.mode} gallery), same physical pill counted as correct:")
     for c in conds:
-        top1, top5, k = stats[c]
+        top1, top5, top10, k = stats[c]
         if k:
-            print(f"  {c:28} top-1 {top1 / k:6.1%}   top-5 {top5 / k:6.1%}   ({k} photos)")
+            print(f"  {c:38} top-1 {top1 / k:6.1%}   top-5 {top5 / k:6.1%}   top-10 {top10 / k:6.1%}   ({k} photos)")
         else:
-            print(f"  {c:28} not measured")
+            print(f"  {c:38} not measured")
     out = HERE.parent / "eval_results.csv"
     with open(out, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(out_rows[0].keys()) if out_rows else ["image"])

@@ -53,6 +53,15 @@ class Settings(BaseSettings):
     # covering priority-tier labels -- the ones restricted search actually
     # returns). Checked before falling back to dataset_zip_path above.
     thumbnails_dir: Path = Path(__file__).resolve().parent / "data" / "thumbnails"
+    # Real pill photos from drug labels, embedded with the model and added
+    # to the reference gallery at startup (scripts/build_photo_gallery.py).
+    photo_gallery_path: Path = Path(__file__).resolve().parent / "data" / "photo_gallery.pt"
+    # The built web app (`npm run build:static` in frontend/). When present,
+    # the backend serves it too, so the whole app runs from one address.
+    frontend_dir: Path = REPO_ROOT / "frontend" / "out"
+    # Scans/OCR requests per minute from one device (a public link must not
+    # let one client tie up the model for everyone).
+    rate_limit_per_minute: int = 40
 
     # "auto" -> cuda if available, else mps (Apple Silicon), else cpu.
     # Override with "cpu" / "mps" / "cuda" if needed.
@@ -84,6 +93,14 @@ class Settings(BaseSettings):
     # candidates even if the visual search missed them (e.g. drugs whose
     # only reference images are package art).
     imprint_candidate_count: int = 30
+    # A color/shape the user confirmed (suggested from the photo by
+    # pill_features.py): pills whose FDA record agrees are added as candidates
+    # and get a small bonus. Small on purpose -- a confirmed imprint is near-
+    # decisive (1.0), color/shape only nudge (lighting can fool both the
+    # reader and the user). Check with scripts/eval_real_photos.py.
+    appearance_candidate_count: int = 30
+    confirmed_color_weight: float = 0.15
+    confirmed_shape_weight: float = 0.08
 
     # Model that reads the imprint from the photo (imprint_vision.py) when
     # ANTHROPIC_API_KEY is set. claude-haiku-5-5 is much cheaper per scan.

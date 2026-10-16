@@ -60,13 +60,22 @@ export type SearchResult = {
   match_count?: number;
 };
 
-const apiBase = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
+const apiBase = process.env.NEXT_PUBLIC_SAME_ORIGIN
+  ? "" // served by the backend itself (npm run build:static)
+  : (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
+
+/** Color(s) and shape the user confirmed, in the FDA's words. */
+export interface PillLook {
+  colors: string[];
+  shape: string | null;
+}
 
 export async function predictPill(
   file: File,
   fileBack?: File | null,
   rxOrOtc?: RxOrOtc,
-  imprint?: string | null
+  imprint?: string | null,
+  look?: PillLook | null
 ): Promise<PredictResponse> {
   const formData = new FormData();
   formData.append("file", file);
@@ -82,6 +91,9 @@ export async function predictPill(
     formData.append("imprint_confirmed", "true");
     if (imprint.trim()) formData.append("imprint", imprint.trim());
   }
+  // Color/shape the user confirmed (never unconfirmed camera guesses).
+  if (look?.colors.length) formData.append("colors", look.colors.join(","));
+  if (look?.shape) formData.append("shape", look.shape);
 
   const response = await fetch(`${apiBase}/api/predict`, {
     method: "POST",
@@ -209,12 +221,13 @@ export async function identifyPill(
   canvas: HTMLCanvasElement,
   topN = 5,
   backCanvas?: HTMLCanvasElement | null,
-  imprint?: string | null
+  imprint?: string | null,
+  look?: PillLook | null
 ): Promise<IdentifyResult> {
   const file = await canvasToFile(canvas);
   const fileBack = backCanvas ? await canvasToFile(backCanvas) : null;
   const { prediction_id, predictions, low_confidence, ocr_imprint_read, imprint_source, imprint_found, query_embeddings } =
-    await predictPill(file, fileBack, null, imprint);
+    await predictPill(file, fileBack, null, imprint, look);
 
   const top = predictions.slice(0, topN);
   const matches = await Promise.all(
@@ -251,7 +264,7 @@ export async function identifyPill(
 export async function readImprint(
   front: HTMLCanvasElement,
   back?: HTMLCanvasElement | null
-): Promise<{ side_1: string; side_2: string; source: "vision" | "ocr" }> {
+): Promise<{ side_1: string; side_2: string; source: "vision" | "ocr"; colors?: string[]; shape?: string | null }> {
   const formData = new FormData();
   formData.append("file", await canvasToFile(front));
   if (back) formData.append("file_back", await canvasToFile(back));

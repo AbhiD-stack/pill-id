@@ -31,7 +31,9 @@ export const COLOR_OPTIONS: { label: string; swatch: string }[] = [
   { label: "BLUE", swatch: "#3b82f6" },
   { label: "GREEN", swatch: "#22c55e" },
   { label: "PURPLE", swatch: "#a855f7" },
+  { label: "TURQUOISE", swatch: "#2dd4bf" },
   { label: "GRAY", swatch: "#9ca3af" },
+  { label: "BLACK", swatch: "#1f2937" },
 ];
 
 // Raw values follow the standard DailyMed/SPL "splscore" convention: the
