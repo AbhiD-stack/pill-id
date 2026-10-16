@@ -93,14 +93,21 @@ async def lifespan(app: FastAPI):
     # keyed lookups (search results, or a match whose *winning* reference
     # image happened to be DailyMed box art) can still show a real photo
     # when one exists for that label.
+    # Prefer ePillID's clean NIH reference photos over its consumer (phone)
+    # photos, which vary a lot in quality.
     state["epillid_by_label"] = {}
     if state["ref_store"] is not None:
         clf = state["classifier"]
         label_idx = clf.ref_label_indices.cpu().numpy()
+        best: dict[str, tuple[int, str]] = {}
         for i, path in enumerate(clf.ref_abs_paths):
             zp = map_to_zip_path(str(path))
             if zp.startswith("ePillID_data/") and state["ref_store"].has(zp):
-                state["epillid_by_label"].setdefault(str(clf.label_strings[label_idx[i]]), zp)
+                label = str(clf.label_strings[label_idx[i]])
+                rank = _epillid_photo_rank(zp)
+                if label not in best or rank < best[label][0]:
+                    best[label] = (rank, zp)
+        state["epillid_by_label"] = {label: zp for label, (_, zp) in best.items()}
         print(f"[startup] Real ePillID pill photos available for {len(state['epillid_by_label'])} labels.")
     state["drug_names"] = DrugNameLookup()
     _check_artifacts(state["classifier"], state["drug_names"], settings)
@@ -193,6 +200,16 @@ def health():
 _THUMB_SUBDIRS = {"pill": "pill", "package": "package", "legacy": ""}
 
 
+def _epillid_photo_rank(zip_path: str) -> int:
+    """Lower = cleaner photo: NIH reference shots, then ePillID's other
+    reference crops, then consumer (phone) photos."""
+    if "/segmented_nih_pills_224/" in zip_path:
+        return 0
+    if "/dr_224/" in zip_path:
+        return 1
+    return 2
+
+
 def _thumbnail_file(label: str, kind: str):
     return get_settings().thumbnails_dir / _THUMB_SUBDIRS[kind] / f"{label}.jpg"
 
@@ -200,21 +217,24 @@ def _thumbnail_file(label: str, kind: str):
 def _resolve_thumbnail(label: str, ref_path: str | None, ref_store: ReferenceImageStore | None,
                        info: dict | None = None) -> tuple[str | None, str | None]:
     """(url, kind) -- kind is "pill_photo" (a real photo of the pill) or
-    "package" (package/label art, which the app replaces with a drawn pill
-    illustration when it has the pill's shape/color). Real photos win:
-      1. the exact winning reference image, if it's a real ePillID photo;
-      2. any real ePillID photo for the label (epillid_by_label);
-      3. a C3PI photo from thumbnails/pill/;
+    "package" (package/label art, labeled as such in the app). The clearest
+    real photo wins:
+      1. a C3PI studio photo from thumbnails/pill/ (600 px, plain background);
+      2. the label's best ePillID photo (NIH reference shots before phone
+         photos, see _epillid_photo_rank) -- or the exact matched gallery
+         image when that one is at least as clean;
+      3. a real photo of the same physical pill from another listing;
       4. DailyMed art from thumbnails/package/ (or the legacy flat folder)."""
-    if ref_store is not None and ref_path is not None:
-        zip_path = map_to_zip_path(ref_path)
-        if zip_path.startswith("ePillID_data/") and ref_store.has(zip_path):
-            return f"/api/reference-image?path={quote(zip_path)}", "pill_photo"
-    zip_path = state.get("epillid_by_label", {}).get(label)
-    if zip_path is not None:
-        return f"/api/reference-image?path={quote(zip_path)}", "pill_photo"
     if _thumbnail_file(label, "pill").exists():
         return f"/api/thumbnail?label={quote(label)}&kind=pill", "pill_photo"
+    best = state.get("epillid_by_label", {}).get(label)
+    if ref_store is not None and ref_path is not None:
+        zip_path = map_to_zip_path(ref_path)
+        if zip_path.startswith("ePillID_data/") and ref_store.has(zip_path) and (
+                best is None or _epillid_photo_rank(zip_path) <= _epillid_photo_rank(best)):
+            best = zip_path
+    if best is not None:
+        return f"/api/reference-image?path={quote(best)}", "pill_photo"
     if info:
         # A real photo of the same physical pill from another of its listings.
         shared = state.get("photo_by_pill", {}).get(pill_key(label, info))
