@@ -297,4 +297,5 @@ class DinoV2PillClassifier:
                 ref_path=self._best_ref_path(torch.tensor(i, device=self.device), sims),
             )
             for i in idxs
+            if torch.isfinite(scores_by_label[i])  # a label with no gallery images can't be scored
         ]

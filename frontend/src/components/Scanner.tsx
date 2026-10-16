@@ -29,7 +29,9 @@ export default function Scanner() {
   const [imprintSide1, setImprintSide1] = useState("");
   const [imprintSide2, setImprintSide2] = useState("");
   const [imprintReading, setImprintReading] = useState(false);
+  const [imprintSuggestion, setImprintSuggestion] = useState<{ side_1: string; side_2: string } | null>(null);
   const [imprintSource, setImprintSource] = useState<ImprintSource>(null);
+  const [imprintFound, setImprintFound] = useState<boolean | null>(null);
   const [predictionId, setPredictionId] = useState<string | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   const [queryEmbeddings, setQueryEmbeddings] = useState<number[][] | null>(null);
@@ -41,18 +43,21 @@ export default function Scanner() {
     setStage("capture-back");
   };
 
-  // After the photos: suggest the imprint read from them, for the user to
-  // confirm or correct. Fields the user already typed into are left alone.
+  // After the photos: read the imprint from them as a SUGGESTION only. The
+  // boxes are never pre-filled: free OCR reads pill imprints correctly only
+  // ~25% of the time, and in testing an unchecked wrong read pushed the
+  // right pill from #1 to past #20 (a confirmed imprint is weighted
+  // heavily). The user has to look at the pill and choose to use it.
   const handleBackDone = async (front: HTMLCanvasElement, back: HTMLCanvasElement | null) => {
     setBackCanvas(back);
     setImprintSide1("");
     setImprintSide2("");
+    setImprintSuggestion(null);
     setStage("imprint");
     setImprintReading(true);
     try {
       const read = await readImprint(front, back);
-      setImprintSide1((prev) => prev || read.side_1);
-      setImprintSide2((prev) => prev || read.side_2);
+      if (read.side_1 || read.side_2) setImprintSuggestion({ side_1: read.side_1, side_2: read.side_2 });
     } catch (err) {
       console.error("Imprint read failed (non-fatal):", err);
     } finally {
@@ -87,6 +92,7 @@ export default function Scanner() {
     setOcrImprintRead(result.ocrImprintRead);
     setPredictionId(result.predictionId);
     setImprintSource(result.imprintSource);
+    setImprintFound(result.imprintFound);
     setQueryEmbeddings(result.queryEmbeddings);
     setMyPillVerdict(null);
     setStage("results");
@@ -140,6 +146,7 @@ export default function Scanner() {
     setBackCanvas(null);
     setImprintSide1("");
     setImprintSide2("");
+    setImprintSuggestion(null);
     setImprintSource(null);
     setPredictionId(null);
     setScanError(null);
@@ -238,10 +245,28 @@ export default function Scanner() {
           {imprintReading && (
             <p className="text-xs text-indigo-600 text-center animate-pulse">Reading the pill from your photo…</p>
           )}
-          {!imprintReading && (imprintSide1 || imprintSide2) && (
-            <p className="text-xs text-amber-700 text-center">
-              Filled in from your photo. Please check it against the pill.
-            </p>
+          {!imprintReading && imprintSuggestion && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center space-y-2">
+              <p className="text-sm text-amber-900">
+                Our camera thinks it says{" "}
+                <span className="font-mono font-bold">
+                  {[imprintSuggestion.side_1, imprintSuggestion.side_2].filter(Boolean).join(" / ")}
+                </span>
+              </p>
+              <p className="text-xs text-amber-800">
+                This reading is often wrong. Only use it if it matches what you see on the pill.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setImprintSide1(imprintSuggestion.side_1);
+                  setImprintSide2(imprintSuggestion.side_2);
+                }}
+                className="px-4 py-1.5 bg-amber-200 hover:bg-amber-300 text-amber-900 font-semibold rounded-lg text-xs"
+              >
+                It matches — use it
+              </button>
+            </div>
           )}
           <div className="grid grid-cols-2 gap-3">
             <label className="text-xs font-semibold text-slate-600">
@@ -301,6 +326,7 @@ export default function Scanner() {
           previewUrl={previewUrl}
           predictionId={predictionId}
           imprintSource={imprintSource}
+          imprintFound={imprintFound}
           myPillVerdict={myPillVerdict}
           onChangeImprint={() => setStage("imprint")}
           onDrop={scheduleDrop}
@@ -322,6 +348,7 @@ function ResultsView({
   previewUrl,
   predictionId,
   imprintSource,
+  imprintFound,
   myPillVerdict,
   onChangeImprint,
   onDrop,
@@ -337,6 +364,7 @@ function ResultsView({
   previewUrl: string | null;
   predictionId: string | null;
   imprintSource: ImprintSource;
+  imprintFound: boolean | null;
   myPillVerdict: MyPillVerdict;
   onChangeImprint: () => void;
   onDrop: (match: PillMatch, bucket: TimeOfDay) => void;
@@ -415,6 +443,17 @@ function ResultsView({
               Not a confident match. Compare it with your saved photo before relying on it.
             </p>
           )}
+        </div>
+      )}
+      {imprintSource === "user" && imprintFound === false && (
+        <div className="bg-amber-50 border-l-4 border-amber-500 rounded-r-xl p-4 shadow-sm">
+          <p className="text-sm text-amber-900 font-semibold">
+            No pill in our database has the imprint &quot;{ocrImprintRead}&quot;.
+          </p>
+          <p className="text-xs text-amber-800 mt-1">
+            Check it for typos (0 vs O, 1 vs I, 5 vs S) and tap Change. The matches below are based on the photo
+            only.
+          </p>
         </div>
       )}
       {lowConfidence && (

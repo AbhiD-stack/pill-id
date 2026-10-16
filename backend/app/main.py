@@ -17,6 +17,7 @@ import time
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Response
@@ -27,7 +28,7 @@ from PIL import Image, UnidentifiedImageError
 from classifier import DinoV2PillClassifier
 from config import get_settings
 from drug_names import DrugNameLookup, dedupe_pills, display_ndc, ndc_from_ref_path, pill_key
-from imprint_match import ocr_engine, read_imprint_text, score_imprint_match
+from imprint_match import ocr_engine, read_imprint_text, score_imprint_match, warm_up_ocr
 from imprint_vision import read_imprint_with_vision, vision_available
 from reference_images import ReferenceImageStore, map_to_zip_path
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
@@ -102,11 +103,63 @@ async def lifespan(app: FastAPI):
                 state["epillid_by_label"].setdefault(str(clf.label_strings[label_idx[i]]), zp)
         print(f"[startup] Real ePillID pill photos available for {len(state['epillid_by_label'])} labels.")
     state["drug_names"] = DrugNameLookup()
+    _check_artifacts(state["classifier"], state["drug_names"], settings)
+
+    # Physical pill -> a real photo of it from ANY of its listings, so a
+    # listing that only has package art can still show the pill itself.
+    # Only imprint-identified pills ("pill" keys) -- those are unambiguous.
+    names: DrugNameLookup = state["drug_names"]
+    photo_by_pill: dict[tuple, tuple[str, str]] = {}
+    for label, zp in state["epillid_by_label"].items():
+        key = pill_key(label, names.lookup_by_label(label))
+        if key[0] == "pill":
+            photo_by_pill.setdefault(key, ("zip", zp))
+    pill_dir = settings.thumbnails_dir / "pill"
+    if pill_dir.is_dir():
+        for f in pill_dir.glob("*.jpg"):
+            key = pill_key(f.stem, names.lookup_by_label(f.stem))
+            if key[0] == "pill":
+                photo_by_pill.setdefault(key, ("thumb", f.stem))
+    state["photo_by_pill"] = photo_by_pill
+    print(f"[startup] Real pill photos available for {len(photo_by_pill)} imprint-identified pills.")
+
+    # Load the OCR model now, not on the first scan (EasyOCR's first call
+    # loads -- and the very first time downloads -- its model files).
+    try:
+        warm_up_ocr()
+    except Exception as e:
+        print(f"[startup] OCR warm-up failed (imprint reading may be slow or unavailable): {e!r}")
     settings.feedback_dir.mkdir(parents=True, exist_ok=True)
     print("[startup] Ready.")
     yield
     if state["ref_store"] is not None:
         state["ref_store"].close()
+
+
+def _check_artifacts(clf: DinoV2PillClassifier, drug_names: DrugNameLookup, settings) -> None:
+    """Loud warnings for mismatched model files, which otherwise don't
+    error -- they just quietly return worse matches. (The repo's committed
+    dinov2_projection_head/ is the old 4,902-class V1 model; V3 is 31,277
+    classes / 366,528 images and must be copied over it or pointed to with
+    MODEL_ARTIFACTS_DIR.)"""
+    labels = [str(l) for l in clf.label_strings]
+    n_refs = int(clf.ref_embeddings.shape[0])
+    in_meta = sum(l in clf.label_meta for l in labels) / max(1, len(labels))
+    with_info = sum(drug_names.lookup_by_label(l) is not None for l in labels) / max(1, len(labels))
+    print(f"[startup] Model check: {len(labels)} drugs, {n_refs} gallery images, from {settings.model_artifacts_dir}. "
+          f"{in_meta:.0%} have a category, {with_info:.0%} have drug info.")
+    problems = []
+    if in_meta < 0.99:
+        problems.append("most drugs are missing from label_meta.json -- the model files don't match this app's "
+                        "data (old V1 files?)")
+    if len(labels) < 30000:
+        problems.append(f"only {len(labels)} drugs -- this looks like the old V1 model, not V3 (31,277)")
+    if clf.ref_embeddings.shape[1] != clf.projection_head.proj[-1].out_features:
+        problems.append("gallery embedding size doesn't match the projection head")
+    if with_info < 0.9:
+        print("[startup] Note: run scripts/fill_missing_drug_info.py once to add names/imprints for the rest.")
+    for p in problems:
+        print(f"[startup] !!! WARNING: {p}")
 
 
 app = FastAPI(title="Pill ID API", version="0.1.0", lifespan=lifespan)
@@ -144,8 +197,8 @@ def _thumbnail_file(label: str, kind: str):
     return get_settings().thumbnails_dir / _THUMB_SUBDIRS[kind] / f"{label}.jpg"
 
 
-def _resolve_thumbnail(label: str, ref_path: str | None, ref_store: ReferenceImageStore | None
-                       ) -> tuple[str | None, str | None]:
+def _resolve_thumbnail(label: str, ref_path: str | None, ref_store: ReferenceImageStore | None,
+                       info: dict | None = None) -> tuple[str | None, str | None]:
     """(url, kind) -- kind is "pill_photo" (a real photo of the pill) or
     "package" (package/label art, which the app replaces with a drawn pill
     illustration when it has the pill's shape/color). Real photos win:
@@ -160,7 +213,16 @@ def _resolve_thumbnail(label: str, ref_path: str | None, ref_store: ReferenceIma
     zip_path = state.get("epillid_by_label", {}).get(label)
     if zip_path is not None:
         return f"/api/reference-image?path={quote(zip_path)}", "pill_photo"
-    for kind, result_kind in (("pill", "pill_photo"), ("package", "package"), ("legacy", "package")):
+    if _thumbnail_file(label, "pill").exists():
+        return f"/api/thumbnail?label={quote(label)}&kind=pill", "pill_photo"
+    if info:
+        # A real photo of the same physical pill from another of its listings.
+        shared = state.get("photo_by_pill", {}).get(pill_key(label, info))
+        if shared and shared[0] == "zip":
+            return f"/api/reference-image?path={quote(shared[1])}", "pill_photo"
+        if shared and shared[0] == "thumb":
+            return f"/api/thumbnail?label={quote(shared[1])}&kind=pill", "pill_photo"
+    for kind, result_kind in (("package", "package"), ("legacy", "package")):
         if _thumbnail_file(label, kind).exists():
             return f"/api/thumbnail?label={quote(label)}&kind={kind}", result_kind
     return None, None
@@ -176,6 +238,77 @@ async def _read_image(file: UploadFile) -> Image.Image:
         return Image.open(io.BytesIO(raw)).convert("RGB")
     except UnidentifiedImageError:
         raise HTTPException(status_code=400, detail="Could not read image. Upload a JPG or PNG.")
+
+
+@dataclass
+class Identification:
+    query_embs: "torch.Tensor"
+    ranked: list  # (Prediction, info, ImprintMatch, fused_score), one row per physical pill, best first
+    imprint_text: str | None
+    imprint_source: str | None  # "user", "ocr" or None
+    imprint_found: bool | None  # user imprint only: does any candidate carry it exactly?
+    low_confidence: bool
+
+
+def identify(clf: DinoV2PillClassifier, drug_names: DrugNameLookup, images: list[Image.Image],
+             imprint: str | None = None, imprint_confirmed: bool = False,
+             rx_or_otc: str | None = None, query_embs=None) -> Identification:
+    """The whole identification pipeline, shared by /api/predict and
+    scripts/eval_real_photos.py so the evaluation measures exactly what the
+    app does.
+
+    Visual retrieval over the gallery (front/back averaged), then imprint
+    fusion: a user-confirmed imprint is trusted (weighted heavily, and its
+    exact matches are added even if the visual search missed them); without
+    one, OCR on the photos gives a weak signal; a confirmed "no imprint"
+    uses none. Duplicate listings of one physical pill collapse to one row."""
+    settings = get_settings()
+    if query_embs is None:  # callers may pass embed_images(images) they already computed
+        query_embs = clf.embed_images(images)
+    pool = clf.predict_topk_from_embeddings(query_embs, k=settings.rerank_pool_size, rx_or_otc=rx_or_otc)
+
+    if imprint_confirmed and not (imprint or "").strip():
+        # The user confirmed the pill has no imprint: don't let OCR misreads
+        # of a blank pill steer the match.
+        text, source, weight = None, None, 0.0
+    elif imprint and imprint.strip():
+        text, source, weight = imprint.strip(), "user", settings.confirmed_imprint_fusion_weight
+        in_pool = {p.label for p in pool}
+        extra = [
+            label for label, _, _ in drug_names.search_by_appearance(
+                imprint=text, limit=settings.imprint_candidate_count)
+            if label not in in_pool
+        ]
+        pool = pool + clf.predictions_for_labels(query_embs, extra)
+    else:
+        # OCR both sides and pool the tokens; imprints are often split
+        # across the two faces.
+        reads = [t for t in (read_imprint_text(img, drug_names.imprint_vocab) for img in images) if t]
+        text = " ".join(reads) if reads else None
+        source, weight = ("ocr" if text else None), settings.imprint_fusion_weight
+
+    rows = []
+    for p in pool:
+        # The predicted label is the primary key; ePillID labels (content
+        # hashes) fall back to the NDC in their image filename.
+        info = drug_names.lookup_by_label(p.label) or drug_names.lookup(p.ref_path)
+        match = score_imprint_match(text, info.get("imprint") if info else None)
+        rows.append((p, info, match, p.score + weight * match.score))
+    rows.sort(key=lambda row: row[3], reverse=True)
+    ranked = dedupe_pills(rows, key=lambda row: pill_key(row[0].label, row[1]))
+    # A result with no drug name and no NDC tells the user nothing; don't let
+    # it take a slot. (scripts/fill_missing_drug_info.py names most of them.)
+    ranked = [r for r in ranked if r[1] or display_ndc(r[0].label) or display_ndc(ndc_from_ref_path(r[0].ref_path))]
+
+    exact = [r for r in ranked if r[2].score >= 0.99]
+    imprint_found = bool(exact) if source == "user" else None
+    # Low confidence = the photo doesn't clearly match anything AND the top
+    # result isn't backed by an exact confirmed imprint. (The fused score
+    # can't be used: a typed imprint adds up to 1.0 to it.)
+    top = ranked[0] if ranked else None
+    imprint_backed = top is not None and source == "user" and top[2].score >= 0.99
+    low_confidence = top is None or (not imprint_backed and top[0].score < settings.low_confidence_threshold)
+    return Identification(query_embs, ranked, text, source, imprint_found, low_confidence)
 
 
 @app.post("/api/predict")
@@ -207,63 +340,15 @@ async def predict(
     ref_store: ReferenceImageStore | None = state["ref_store"]
     drug_names: DrugNameLookup = state["drug_names"]
 
-    # Pull a wider embedding-only pool (averaged across front+back when both
-    # are provided), then re-rank it with the OCR imprint signal so a
-    # candidate with a matching imprint but slightly lower raw visual
-    # similarity can still surface in the final top_k. rx_or_otc restricts
-    # the pool to that category's priority-tier labels (the "ask RX/OTC/
-    # don't know" app mode the training gate's 93-98% numbers were measured
-    # against) -- omitted/unrecognized falls back to the full unrestricted
-    # gallery (~89.5% top10), which is always available.
     images = [image, back_image] if back_image is not None else [image]
-    query_embs = clf.embed_images(images)
-    pool = clf.predict_topk_from_embeddings(query_embs, k=settings.rerank_pool_size, rx_or_otc=rx_or_otc)
-
-    if imprint_confirmed and not (imprint or "").strip():
-        # The user confirmed the pill has no imprint: don't let OCR misreads
-        # of a blank pill steer the match.
-        ocr_text, imprint_source, imprint_weight = None, None, 0.0
-    elif imprint and imprint.strip():
-        # User-typed or user-confirmed imprint: trusted, weighted heavily,
-        # and used to pull in imprint matches the visual search missed.
-        ocr_text = imprint.strip()
-        imprint_source = "user"
-        imprint_weight = settings.confirmed_imprint_fusion_weight
-        in_pool = {p.label for p in pool}
-        extra = [
-            label for label, _, _ in drug_names.search_by_appearance(
-                imprint=ocr_text, limit=settings.imprint_candidate_count)
-            if label not in in_pool
-        ]
-        pool = pool + clf.predictions_for_labels(query_embs, extra)
-    else:
-        # Try OCR on both sides and pool the tokens; imprint codes are often
-        # split across the front and back faces (e.g. maker mark on one,
-        # strength on the other), so a single-side read would miss half the
-        # signal.
-        ocr_candidates = [t for t in (read_imprint_text(img, drug_names.imprint_vocab) for img in images) if t]
-        ocr_text = " ".join(ocr_candidates) if ocr_candidates else None
-        imprint_source = "ocr" if ocr_text else None
-        imprint_weight = settings.imprint_fusion_weight
-
-    fused = []
-    for p in pool:
-        # Prefer lookup by the model's own predicted label -- it's already
-        # the canonical pooled identifier for the new gallery, and reliable
-        # across every source dataset (filename-based lookup below is not;
-        # see drug_names.py). Fall back to the old filename-derived NDC only
-        # if the new table has no entry for this label (e.g. an older
-        # checkpoint/table pairing).
-        info = drug_names.lookup_by_label(p.label) or drug_names.lookup(p.ref_path)
-        candidate_imprint = info.get("imprint") if info else None
-        match = score_imprint_match(ocr_text, candidate_imprint)
-        fused.append((p, info, match, p.score + imprint_weight * match.score))
-    fused.sort(key=lambda row: row[3], reverse=True)
-    fused = dedupe_pills(fused, key=lambda row: pill_key(row[0].label, row[1]))[: settings.top_k]
+    ident = identify(clf, drug_names, images, imprint=imprint,
+                     imprint_confirmed=imprint_confirmed, rx_or_otc=rx_or_otc)
+    fused = ident.ranked[: settings.top_k]
+    query_embs, ocr_text, imprint_source = ident.query_embs, ident.imprint_text, ident.imprint_source
 
     results = []
     for p, info, match, fused_score in fused:
-        ref_url, ref_kind = _resolve_thumbnail(p.label, p.ref_path, ref_store)
+        ref_url, ref_kind = _resolve_thumbnail(p.label, p.ref_path, ref_store, info)
         results.append(
             {
                 "label": p.label,
@@ -295,7 +380,6 @@ async def predict(
             }
         )
 
-    top_fused_score = results[0]["fused_score"] if results else 0.0
     prediction_id = uuid.uuid4().hex
     state.setdefault("_recent_predictions", {})[prediction_id] = {
         "image_bytes": None,  # filled in below, kept out of the JSON response
@@ -312,7 +396,11 @@ async def predict(
         "predictions": results,
         "ocr_imprint_read": ocr_text,
         "imprint_source": imprint_source,  # "user" (typed/confirmed), "ocr", or None
-        "low_confidence": top_fused_score < settings.low_confidence_threshold,
+        "low_confidence": ident.low_confidence,
+        # False when the user gave an imprint that no pill in the database
+        # carries (likely a typo) -- the UI says so instead of silently
+        # showing photo-only matches.
+        "imprint_found": ident.imprint_found,
         "search_mode": "restricted" if clf.has_restricted_mode(rx_or_otc) else "unrestricted",
         # Front (and back, if sent) embeddings: the client stores these with a
         # pill the user saves to "My Pills" and compares future scans against
@@ -441,7 +529,7 @@ def _build_search_result(label: str, info: dict) -> dict:
     clf: DinoV2PillClassifier = state["classifier"]
     ref_store: ReferenceImageStore | None = state["ref_store"]
     ref_path = clf.ref_path_for_label(label)
-    ref_url, ref_kind = _resolve_thumbnail(label, ref_path, ref_store)
+    ref_url, ref_kind = _resolve_thumbnail(label, ref_path, ref_store, info)
     return {
         "label": label,
         "ndc": display_ndc(label),

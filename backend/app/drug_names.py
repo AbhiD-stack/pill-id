@@ -187,7 +187,12 @@ class DrugNameLookup:
                 starts.append((label, info))
             elif q in name:
                 contains.append((label, info))
-        return dedupe_pills(starts + contains)[:limit]
+        # Exact name first, then plainer (shorter) names: "acetaminophen"
+        # before "acetaminophen / dextromethorphan / doxylamine".
+        by_len = lambda row: (len(row[1].get("name") or ""), row[1].get("name") or "")
+        exact = [r for r in starts if (r[1].get("name") or "").lower() == q]
+        starts = sorted([r for r in starts if (r[1].get("name") or "").lower() != q], key=by_len)
+        return dedupe_pills(exact + starts + sorted(contains, key=by_len))[:limit]
 
     def search_by_appearance(
         self,

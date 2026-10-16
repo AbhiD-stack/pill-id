@@ -64,6 +64,14 @@ def ocr_engine() -> str:
     return "tesseract" if pytesseract is not None else "none"
 
 
+def warm_up_ocr() -> None:
+    """Load EasyOCR's model now (downloads it on the very first run)."""
+    global _easy_reader
+    if easyocr is not None and _easy_reader is None:
+        print("[startup] Loading EasyOCR (first run downloads ~100 MB of model files)...")
+        _easy_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+
+
 def _easyocr_tokens(image: Image.Image) -> set[str]:
     global _easy_reader
     import numpy as np

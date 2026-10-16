@@ -33,6 +33,8 @@ export type PredictResponse = {
   // Where ocr_imprint_read came from: "user" = typed/confirmed by the user,
   // "ocr" = read automatically and unconfirmed, null = no imprint used.
   imprint_source?: "user" | "ocr" | null;
+  // User-typed imprint only: false = no pill in the database carries it.
+  imprint_found?: boolean | null;
   // One embedding per uploaded side (front, then back). Stored with a pill
   // saved to "My Pills" and compared against future scans on-device. Absent
   // from older backends.
@@ -183,6 +185,7 @@ export type IdentifyResult = {
   ocrImprintRead: string | null;
   predictionId: string;
   imprintSource: "user" | "ocr" | null;
+  imprintFound: boolean | null;
   queryEmbeddings: number[][] | null;
 };
 
@@ -210,7 +213,7 @@ export async function identifyPill(
 ): Promise<IdentifyResult> {
   const file = await canvasToFile(canvas);
   const fileBack = backCanvas ? await canvasToFile(backCanvas) : null;
-  const { prediction_id, predictions, low_confidence, ocr_imprint_read, imprint_source, query_embeddings } =
+  const { prediction_id, predictions, low_confidence, ocr_imprint_read, imprint_source, imprint_found, query_embeddings } =
     await predictPill(file, fileBack, null, imprint);
 
   const top = predictions.slice(0, topN);
@@ -238,6 +241,7 @@ export async function identifyPill(
     ocrImprintRead: ocr_imprint_read,
     predictionId: prediction_id,
     imprintSource: imprint_source ?? null,
+    imprintFound: imprint_found ?? null,
     queryEmbeddings: query_embeddings && query_embeddings.length > 0 ? query_embeddings : null,
   };
 }
