@@ -140,28 +140,24 @@ class DinoV2PillClassifier:
             f"across {self.num_reference_pills} pill classes."
         )
 
-        # Precomputed priority-tier+category masks for restricted-gallery
-        # search ("ask RX/OTC/don't know" app mode). This is the search mode
-        # the training gate's actual headline numbers were measured against
-        # (93-98% top10) -- the unrestricted full-gallery search below is a
-        # strictly harder, lower-accuracy fallback (measured ~89.5% top10),
-        # used only when the caller doesn't supply rx_or_otc or no
-        # label_meta.json was loaded.
+        # Category masks for the "ask RX/OTC/don't know" app mode: RX or OTC
+        # searches every label in that category. These used to also require
+        # tier == "priority", which hid ~87% of labels (27k of 31k) -- any
+        # pill from a manufacturer/repackager outside the priority list
+        # (e.g. a store-brand acetaminophen) could never be returned at all,
+        # however good the photo. The priority-only eval numbers don't apply
+        # to this wider search; the unrestricted full gallery is used when
+        # the caller doesn't supply rx_or_otc or no label_meta.json loaded.
         self._restricted_masks: dict[str, torch.Tensor] = {}
         if self.label_meta:
             for cat in ("RX", "OTC"):
                 mask = torch.tensor(
-                    [
-                        self.label_meta.get(str(lbl), {}).get("category") == cat
-                        and self.label_meta.get(str(lbl), {}).get("tier") == "priority"
-                        for lbl in self.label_strings
-                    ],
+                    [self.label_meta.get(str(lbl), {}).get("category") == cat for lbl in self.label_strings],
                     dtype=torch.bool, device=self.device,
                 )
                 if mask.any():
                     self._restricted_masks[cat] = mask
-                    print(f"[classifier] Restricted-gallery mask for {cat}: "
-                          f"{int(mask.sum())} priority-tier labels.")
+                    print(f"[classifier] Category mask for {cat}: {int(mask.sum())} labels.")
 
     @torch.no_grad()
     def _embed(self, image: Image.Image) -> torch.Tensor:
@@ -254,29 +250,51 @@ class DinoV2PillClassifier:
 
         k = min(k, int((scores_by_label > -torch.inf).sum().item()))
         top_scores, top_label_indices = scores_by_label.topk(k)
-
-        predictions: List[Prediction] = []
-        for score, label_idx in zip(top_scores.cpu().tolist(), top_label_indices):
-            mask = self.ref_label_indices == label_idx
-            # Best-matching reference image across whichever side (front/back)
-            # scored it highest, not just the first image.
-            ref_path = "N/A"
-            best_sim = -torch.inf
-            for sims in similarities_per_image:
-                sims_for_label = sims[mask]
-                if sims_for_label.numel() == 0:
-                    continue
-                local_best = torch.argmax(sims_for_label)
-                local_best_val = sims_for_label[local_best].item()
-                if local_best_val > best_sim:
-                    best_sim = local_best_val
-                    global_idx = torch.nonzero(mask).squeeze(1)[local_best]
-                    ref_path = str(self.ref_abs_paths[global_idx.item()])
-            predictions.append(
-                Prediction(
-                    label=str(self.label_strings[label_idx.item()]),
-                    score=float(score),
-                    ref_path=ref_path,
-                )
+        return [
+            Prediction(
+                label=str(self.label_strings[label_idx.item()]),
+                score=float(score),
+                ref_path=self._best_ref_path(label_idx, similarities_per_image),
             )
-        return predictions
+            for score, label_idx in zip(top_scores.cpu().tolist(), top_label_indices)
+        ]
+
+    def _best_ref_path(self, label_idx, similarities_per_image) -> str:
+        """Best-matching reference image across whichever side (front/back)
+        scored the label highest, not just the first image."""
+        mask = self.ref_label_indices == label_idx
+        ref_path = "N/A"
+        best_sim = -torch.inf
+        for sims in similarities_per_image:
+            sims_for_label = sims[mask]
+            if sims_for_label.numel() == 0:
+                continue
+            local_best = torch.argmax(sims_for_label)
+            local_best_val = sims_for_label[local_best].item()
+            if local_best_val > best_sim:
+                best_sim = local_best_val
+                global_idx = torch.nonzero(mask).squeeze(1)[local_best]
+                ref_path = str(self.ref_abs_paths[global_idx.item()])
+        return ref_path
+
+    @torch.no_grad()
+    def predictions_for_labels(self, query_embs: torch.Tensor, labels: List[str]) -> List[Prediction]:
+        """Visual scores for specific labels (e.g. candidates found by imprint
+        search that the visual top-k missed), scored exactly like
+        predict_topk_from_embeddings. Labels not in the gallery are skipped."""
+        if not hasattr(self, "_label_index"):
+            self._label_index = {str(l): i for i, l in enumerate(self.label_strings)}
+        idxs = [self._label_index[l] for l in labels if l in self._label_index]
+        if not idxs:
+            return []
+        per_image = [self._best_per_label(q.unsqueeze(0)) for q in query_embs]
+        scores_by_label = torch.stack([s for s, _ in per_image], dim=0).mean(dim=0)
+        sims = [s for _, s in per_image]
+        return [
+            Prediction(
+                label=str(self.label_strings[i]),
+                score=float(scores_by_label[i].item()),
+                ref_path=self._best_ref_path(torch.tensor(i, device=self.device), sims),
+            )
+            for i in idxs
+        ]

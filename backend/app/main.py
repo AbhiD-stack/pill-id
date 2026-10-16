@@ -26,8 +26,9 @@ from PIL import Image, UnidentifiedImageError
 
 from classifier import DinoV2PillClassifier
 from config import get_settings
-from drug_names import DrugNameLookup
+from drug_names import DrugNameLookup, dedupe_pills, display_ndc, pill_key
 from imprint_match import read_imprint_text, score_imprint_match
+from imprint_vision import read_imprint_with_vision, vision_available
 from reference_images import ReferenceImageStore, map_to_zip_path
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
 
@@ -63,6 +64,11 @@ async def lifespan(app: FastAPI):
             "https://github.com/UB-Mannheim/tesseract/wiki and make sure "
             "tesseract.exe is on PATH (or set pytesseract.pytesseract.tesseract_cmd)."
         )
+
+    if vision_available():
+        print(f"[startup] Imprint reading: {settings.imprint_vision_model} (photos are sent to the Anthropic API).")
+    else:
+        print("[startup] Imprint reading: Tesseract only (set ANTHROPIC_API_KEY for the much better vision reader).")
 
     print("[startup] Loading model... (first run downloads the DINOv2 backbone)")
     state["classifier"] = DinoV2PillClassifier(
@@ -177,6 +183,7 @@ async def predict(
     file: UploadFile = File(None),
     file_back: UploadFile = File(None),
     rx_or_otc: str | None = Form(None),  # "RX" | "OTC" | None/omitted == "don't know"
+    imprint: str | None = Form(None),  # imprint the user typed/confirmed, e.g. "L 5"
 ):  # file = front/primary side (required); file_back = optional reverse side.
     # Set the bypass cookie to destroy the localtunnel landing wall permanently
     response.set_cookie(key="bypass-tunnel-reminder", value="true", path="/")
@@ -207,11 +214,28 @@ async def predict(
     query_embs = clf.embed_images(images)
     pool = clf.predict_topk_from_embeddings(query_embs, k=settings.rerank_pool_size, rx_or_otc=rx_or_otc)
 
-    # Try OCR on both sides and pool the tokens; imprint codes are often split
-    # across the front and back faces (e.g. maker mark on one, strength on
-    # the other), so a single-side read would miss half the signal.
-    ocr_candidates = [t for t in (read_imprint_text(img) for img in images) if t]
-    ocr_text = " ".join(ocr_candidates) if ocr_candidates else None
+    if imprint and imprint.strip():
+        # User-typed or user-confirmed imprint: trusted, weighted heavily,
+        # and used to pull in imprint matches the visual search missed.
+        ocr_text = imprint.strip()
+        imprint_source = "user"
+        imprint_weight = settings.confirmed_imprint_fusion_weight
+        in_pool = {p.label for p in pool}
+        extra = [
+            label for label, _, _ in drug_names.search_by_appearance(
+                imprint=ocr_text, limit=settings.imprint_candidate_count)
+            if label not in in_pool
+        ]
+        pool = pool + clf.predictions_for_labels(query_embs, extra)
+    else:
+        # Try OCR on both sides and pool the tokens; imprint codes are often
+        # split across the front and back faces (e.g. maker mark on one,
+        # strength on the other), so a single-side read would miss half the
+        # signal.
+        ocr_candidates = [t for t in (read_imprint_text(img) for img in images) if t]
+        ocr_text = " ".join(ocr_candidates) if ocr_candidates else None
+        imprint_source = "ocr" if ocr_text else None
+        imprint_weight = settings.imprint_fusion_weight
 
     fused = []
     for p in pool:
@@ -224,9 +248,9 @@ async def predict(
         info = drug_names.lookup_by_label(p.label) or drug_names.lookup(p.ref_path)
         candidate_imprint = info.get("imprint") if info else None
         match = score_imprint_match(ocr_text, candidate_imprint)
-        fused.append((p, info, match, p.score + settings.imprint_fusion_weight * match.score))
+        fused.append((p, info, match, p.score + imprint_weight * match.score))
     fused.sort(key=lambda row: row[3], reverse=True)
-    fused = fused[: settings.top_k]
+    fused = dedupe_pills(fused, key=lambda row: pill_key(row[0].label, row[1]))[: settings.top_k]
 
     results = []
     for p, info, match, fused_score in fused:
@@ -243,7 +267,7 @@ async def predict(
                 # would show a hash like "97121f6cbb03..." as the "NDC" even
                 # when the real name/imprint/color lookup above succeeded
                 # fine via the label).
-                "ndc": p.label,
+                "ndc": display_ndc(p.label),
                 "name": info.get("name") if info else None,
                 "imprint": info.get("imprint") if info else None,
                 "color": info.get("color") if info else None,
@@ -275,6 +299,7 @@ async def predict(
         "prediction_id": prediction_id,
         "predictions": results,
         "ocr_imprint_read": ocr_text,
+        "imprint_source": imprint_source,  # "user" (typed/confirmed), "ocr", or None
         "low_confidence": top_fused_score < settings.low_confidence_threshold,
         "search_mode": "restricted" if clf.has_restricted_mode(rx_or_otc) else "unrestricted",
         # Front (and back, if sent) embeddings: the client stores these with a
@@ -288,6 +313,22 @@ async def predict(
 
 def _embeddings_json(embs) -> list[list[float]]:
     return [[round(v, 5) for v in row] for row in embs.cpu().tolist()]
+
+
+@app.post("/api/read-imprint")
+async def read_imprint(file: UploadFile = File(...), file_back: UploadFile = File(None)):
+    """Suggest the imprint on each side, for the user to confirm or correct
+    before matching. Vision model when configured, else Tesseract."""
+    images = [await _read_image(file)]
+    if file_back is not None:
+        images.append(await _read_image(file_back))
+    sides = read_imprint_with_vision(images, get_settings().imprint_vision_model)
+    source = "vision"
+    if sides is None:
+        reads = [read_imprint_text(img) or "" for img in images]
+        sides = (reads[0], reads[1] if len(reads) > 1 else "")
+        source = "ocr"
+    return {"side_1": sides[0], "side_2": sides[1], "source": source}
 
 
 @app.post("/api/embed")
@@ -390,7 +431,7 @@ def _build_search_result(label: str, info: dict) -> dict:
     ref_url, ref_kind = _resolve_thumbnail(label, ref_path, ref_store)
     return {
         "label": label,
-        "ndc": label,
+        "ndc": display_ndc(label),
         "name": info.get("name"),
         "imprint": info.get("imprint"),
         "color": info.get("color"),
@@ -402,11 +443,15 @@ def _build_search_result(label: str, info: dict) -> dict:
 
 
 @app.get("/api/search-by-name")
-def search_by_name(q: str = Query(..., min_length=1), limit: int = Query(20, le=50)):
+def search_by_name(
+    q: str = Query(..., min_length=1),
+    imprint: str | None = Query(None),
+    limit: int = Query(30, le=50),
+):
     """Look a medication up by name instead of a photo -- 'what does X look
-    like' rather than 'what is this'."""
+    like' rather than 'what is this'. imprint optionally narrows it down."""
     drug_names: DrugNameLookup = state["drug_names"]
-    results = drug_names.search_by_name(q, limit=limit)
+    results = drug_names.search_by_name(q, limit=limit, imprint=imprint)
     return {"results": [_build_search_result(label, info) for label, info in results]}
 
 

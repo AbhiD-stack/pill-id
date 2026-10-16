@@ -135,4 +135,9 @@ def score_imprint_match(ocr_text: Optional[str], candidate_imprint: Optional[str
     )
 
     raw_score = 0.6 * jaccard + 0.4 * best_ratio
+    # Same characters, different spacing ("L5" typed vs "L;5" stored) is
+    # the same imprint.
+    if "".join(sorted(query_tokens)) == "".join(sorted(cand_tokens)) or \
+            re.sub(r"[^A-Z0-9]", "", ocr_text.upper()) == "".join(_TOKEN_RE.findall(candidate_imprint.upper())):
+        raw_score = 1.0
     return ImprintMatch(ocr_text=ocr_text, score=max(0.0, min(1.0, raw_score)))

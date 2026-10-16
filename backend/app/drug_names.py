@@ -39,6 +39,44 @@ class DrugInfo(TypedDict, total=False):
     status: Optional[str]
 
 
+_NDC_RE = re.compile(r"^\d{4,5}-\d{3,4}(-\d{1,2})?$")
+
+
+def display_ndc(label: str) -> Optional[str]:
+    """The label when it's an actual NDC; None for the gallery's non-NDC
+    labels (e.g. 56-char content hashes), which aren't meaningful to show."""
+    return label if _NDC_RE.match(label) else None
+
+
+def pill_key(label: str, info: Optional[DrugInfo]) -> tuple:
+    """Identity of the physical pill. The same pill is often listed under
+    several NDCs (package sizes, repackagers: 70000-0312, 70000-0312-1, ...);
+    results keep only the first of each so every slot is a different pill."""
+    if not info:
+        return ("label", label)
+    norm = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
+    return (norm(info.get("name")), norm(info.get("imprint")), norm(info.get("color")), norm(info.get("shape")))
+
+
+def dedupe_pills(rows: list, key=lambda row: pill_key(row[0], row[1])) -> list:
+    seen, out = set(), []
+    for row in rows:
+        k = key(row)
+        if k not in seen:
+            seen.add(k)
+            out.append(row)
+    return out
+
+
+def _imprint_tokens(s: Optional[str]) -> list[str]:
+    return [t for t in re.split(r"[^a-z0-9]+", (s or "").lower()) if t]
+
+
+def _compact(tokens: list[str]) -> str:
+    """"L5", "L 5" and "L;5" all compact to "l5"."""
+    return "".join(tokens)
+
+
 def ndc_from_ref_path(ref_path: str) -> str:
     """Extract the NDC token from a reference image path.
 
@@ -69,22 +107,31 @@ class DrugNameLookup:
         """Preferred lookup for the new gallery -- see module docstring."""
         return self._table.get(label)
 
-    def search_by_name(self, query: str, limit: int = 20) -> list[tuple[str, DrugInfo]]:
+    def search_by_name(self, query: str, limit: int = 20, imprint: Optional[str] = None
+                       ) -> list[tuple[str, DrugInfo]]:
         """Case-insensitive substring match against drug name. Returns
-        (label, info) pairs, exact-prefix matches first."""
+        (label, info) pairs, exact-prefix matches first, one per distinct
+        pill. imprint (optional) narrows common names -- "acetaminophen"
+        alone matches hundreds of different pills -- to those whose imprint
+        contains every given token."""
         q = query.strip().lower()
         if not q:
             return []
+        want = _imprint_tokens(imprint)
         starts, contains = [], []
         for label, info in self._table.items():
             name = (info.get("name") or "").lower()
             if not name:
                 continue
+            if want:
+                have = _imprint_tokens(info.get("imprint"))
+                if not all(w in have for w in want) and _compact(want) not in _compact(have):
+                    continue
             if name.startswith(q):
                 starts.append((label, info))
             elif q in name:
                 contains.append((label, info))
-        return (starts + contains)[:limit]
+        return dedupe_pills(starts + contains)[:limit]
 
     def search_by_appearance(
         self,
@@ -104,11 +151,10 @@ class DrugNameLookup:
         per pill (often multiple tokens from both faces joined, e.g.
         "L437;PM"), not a per-side breakdown. The UI collects "Side 1" and
         "Side 2" separately for a natural two-sided-pill description, but
-        here they're just space-joined and split back into whitespace-
-        separated tokens, matched OR-wise (any token present anywhere in the
-        stored imprint counts as a hit) -- a strict substring match on the
-        joined string would almost never hit, since the real field doesn't
-        preserve "side order" the way a two-field form naturally implies.
+        here they're just joined and split back into tokens, each scored on
+        its own (see below) -- a strict substring match on the joined string
+        would almost never hit, since the real field doesn't preserve "side
+        order" the way a two-field form naturally implies.
 
         color supports multiple selections too (comma/space-separated),
         but AND-matched rather than OR -- e.g. a two-toned capsule that's
@@ -121,12 +167,15 @@ class DrugNameLookup:
             ("score_marks", score_marks),
         ]
         simple_criteria = [(field, val.strip().lower()) for field, val in simple_criteria if val and val.strip()]
-        imprint_tokens = [t.lower() for t in (imprint or "").split() if t.strip()]
+        imprint_tokens = _imprint_tokens(imprint)
         color_tokens = [t.strip().lower() for t in re.split(r"[,\s]+", color or "") if t.strip()]
         if not simple_criteria and not imprint_tokens and not color_tokens:
             return []
 
         scored: list[tuple[str, DrugInfo, int]] = []
+        # Tie-break: fewer imprint tokens the user didn't mention first, so
+        # typing "L 5" ranks the "L;5" pill above "APO;L;5".
+        unmentioned: dict[str, int] = {}
         for label, info in self._table.items():
             count = 0
             for field, val in simple_criteria:
@@ -134,17 +183,30 @@ class DrugNameLookup:
                 if field_val and val in field_val:
                     count += 1
             if imprint_tokens:
-                stored_imprint = (info.get("imprint") or "").lower()
-                if stored_imprint and any(tok in stored_imprint for tok in imprint_tokens):
-                    count += 1
+                # Each typed token that equals one of the pill's imprint
+                # tokens counts 2 (so "L 5" ranks the "L;5" pill above any
+                # imprint merely containing an L); a substring hit counts 1.
+                stored = _imprint_tokens(info.get("imprint"))
+                unmentioned[label] = len([s for s in stored if s not in imprint_tokens])
+                token_count = 0
+                for tok in imprint_tokens:
+                    if tok in stored:
+                        token_count += 2
+                    elif any(tok in s for s in stored):
+                        token_count += 1
+                # Spacing differences ("L5" vs "L;5") count as a full match.
+                if _compact(imprint_tokens) == _compact(stored):
+                    token_count = max(token_count, 2 * len(imprint_tokens), 2)
+                    unmentioned[label] = 0
+                count += token_count
             if color_tokens:
                 stored_color = (info.get("color") or "").lower()
                 if stored_color and all(tok in stored_color for tok in color_tokens):
                     count += len(color_tokens)
             if count > 0:
                 scored.append((label, info, count))
-        scored.sort(key=lambda row: row[2], reverse=True)
-        return scored[:limit]
+        scored.sort(key=lambda row: (-row[2], unmentioned.get(row[0], 0)))
+        return dedupe_pills(scored)[:limit]
 
     @property
     def size(self) -> int:

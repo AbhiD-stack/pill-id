@@ -441,7 +441,7 @@ export default function ImageCapture({
               onClick={handleSubmit}
               className="flex-1 px-4 py-3 bg-green-600 hover:bg-green-700 text-white font-semibold rounded-lg"
             >
-              ✓ Identify Pill
+              ✓ Use this photo
             </button>
             <button
               onClick={() => {

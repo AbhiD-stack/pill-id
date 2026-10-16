@@ -63,14 +63,31 @@ class Settings(BaseSettings):
 
     # How many embedding-only candidates to pull before imprint re-ranking.
     # Must be >= top_k; wider pool gives the re-ranker room to promote a
-    # correct-but-not-top-embedding-score candidate.
-    rerank_pool_size: int = 30
+    # correct-but-not-top-embedding-score candidate. Also absorbs duplicate
+    # listings of the same pill, which are collapsed before taking top_k.
+    rerank_pool_size: int = 60
 
     # Weight of the OCR imprint-match score in the final fused score. The
     # fused score is: cosine_similarity + imprint_fusion_weight * imprint_score
     # (imprint_score in [0, 1]), so this is roughly "how many points of cosine
     # similarity a perfect imprint match is worth."
     imprint_fusion_weight: float = 0.25
+
+    # Same, for an imprint the user typed or confirmed. A human-checked
+    # imprint is far more reliable than raw OCR, so it outweighs visual
+    # similarity: an exact imprint match (score 1.0) beats a merely
+    # similar-looking pill with a different imprint, since cosine scores
+    # between candidates rarely differ by more than ~0.4.
+    confirmed_imprint_fusion_weight: float = 1.0
+
+    # With an imprint, this many imprint-search hits are added to the
+    # candidates even if the visual search missed them (e.g. drugs whose
+    # only reference images are package art).
+    imprint_candidate_count: int = 30
+
+    # Model that reads the imprint from the photo (imprint_vision.py) when
+    # ANTHROPIC_API_KEY is set. claude-haiku-5-5 is much cheaper per scan.
+    imprint_vision_model: str = "claude-opus-5-5"
 
     # Below this fused top-1 score, flag the response as low-confidence
     # instead of presenting a guess as if it were reliable.

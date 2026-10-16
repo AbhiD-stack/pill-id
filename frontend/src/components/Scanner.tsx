@@ -2,7 +2,7 @@
 "use client";
 
 import { useState } from "react";
-import { identifyPill, submitFeedback, type PillMatch, type RxOrOtc, type SearchResult } from "@/lib/api";
+import { identifyPill, readImprint, submitFeedback, type PillMatch, type SearchResult } from "@/lib/api";
 import { addLogEntry, addScheduleEntry, addReferencePill, checkCompliance, getRecentDrugNames, getReferencePills, TimeOfDay } from "@/lib/db";
 import { scoreMyPills, judgeMyPillMatch, type MyPillVerdict } from "@/lib/myPills";
 import { fullSafetyCheck } from "@/lib/safety";
@@ -12,11 +12,11 @@ import ImageCapture from "./ImageCapture";
 import PillSearchPanel from "./PillSearchPanel";
 import PillThumb from "./PillThumb";
 
-type Stage = "choose-category" | "capture-front" | "capture-back" | "identifying" | "results";
+type Stage = "capture-front" | "capture-back" | "imprint" | "identifying" | "results";
+type ImprintSource = "user" | "ocr" | null;
 
 export default function Scanner() {
-  const [stage, setStage] = useState<Stage>("choose-category");
-  const [rxOrOtc, setRxOrOtc] = useState<RxOrOtc>(null);
+  const [stage, setStage] = useState<Stage>("capture-front");
   const [statusMsg, setStatusMsg] = useState("Analyzing pill features...");
   const [matches, setMatches] = useState<PillMatch[] | null>(null);
   const [lowConfidence, setLowConfidence] = useState(false);
@@ -25,8 +25,12 @@ export default function Scanner() {
   const [scanTime, setScanTime] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [frontCanvas, setFrontCanvas] = useState<HTMLCanvasElement | null>(null);
+  const [backCanvas, setBackCanvas] = useState<HTMLCanvasElement | null>(null);
+  const [imprintSide1, setImprintSide1] = useState("");
+  const [imprintSide2, setImprintSide2] = useState("");
+  const [imprintReading, setImprintReading] = useState(false);
+  const [imprintSource, setImprintSource] = useState<ImprintSource>(null);
   const [predictionId, setPredictionId] = useState<string | null>(null);
-  const [searchMode, setSearchMode] = useState<"restricted" | "unrestricted" | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   const [queryEmbeddings, setQueryEmbeddings] = useState<number[][] | null>(null);
   const [myPillVerdict, setMyPillVerdict] = useState<MyPillVerdict>(null);
@@ -37,7 +41,26 @@ export default function Scanner() {
     setStage("capture-back");
   };
 
-  const runIdentify = async (front: HTMLCanvasElement, back: HTMLCanvasElement | null) => {
+  // After the photos: suggest the imprint read from them, for the user to
+  // confirm or correct. Fields the user already typed into are left alone.
+  const handleBackDone = async (front: HTMLCanvasElement, back: HTMLCanvasElement | null) => {
+    setBackCanvas(back);
+    setImprintSide1("");
+    setImprintSide2("");
+    setStage("imprint");
+    setImprintReading(true);
+    try {
+      const read = await readImprint(front, back);
+      setImprintSide1((prev) => prev || read.side_1);
+      setImprintSide2((prev) => prev || read.side_2);
+    } catch (err) {
+      console.error("Imprint read failed (non-fatal):", err);
+    } finally {
+      setImprintReading(false);
+    }
+  };
+
+  const runIdentify = async (front: HTMLCanvasElement, back: HTMLCanvasElement | null, imprint: string) => {
     setStage("identifying");
     setStatusMsg("Analyzing pill features...");
     setScanTime(null);
@@ -47,7 +70,7 @@ export default function Scanner() {
     setScanError(null);
     let result;
     try {
-      result = await identifyPill(front, 5, back, rxOrOtc);
+      result = await identifyPill(front, 5, back, imprint);
     } catch (err: any) {
       console.error("Scan failed:", err);
       setScanError(err?.message || String(err));
@@ -63,7 +86,7 @@ export default function Scanner() {
     setLowConfidence(result.lowConfidence);
     setOcrImprintRead(result.ocrImprintRead);
     setPredictionId(result.predictionId);
-    setSearchMode(result.searchMode);
+    setImprintSource(result.imprintSource);
     setQueryEmbeddings(result.queryEmbeddings);
     setMyPillVerdict(null);
     setStage("results");
@@ -114,13 +137,15 @@ export default function Scanner() {
     setScanTime(null);
     setPreviewUrl(null);
     setFrontCanvas(null);
+    setBackCanvas(null);
+    setImprintSide1("");
+    setImprintSide2("");
+    setImprintSource(null);
     setPredictionId(null);
-    setSearchMode(null);
-    setRxOrOtc(null);
     setScanError(null);
     setQueryEmbeddings(null);
     setMyPillVerdict(null);
-    setStage("choose-category");
+    setStage("capture-front");
   };
 
   async function scheduleDrop(match: PillMatch, bucket: TimeOfDay) {
@@ -170,38 +195,6 @@ export default function Scanner() {
 
   return (
     <div>
-      {stage === "choose-category" && (
-        <div className="max-w-md mx-auto text-center space-y-5 py-8">
-          <div>
-            <p className="text-lg font-bold text-slate-900">Is this a prescription or over-the-counter pill?</p>
-            <p className="text-sm text-slate-500 mt-1">
-              Knowing this narrows the search and gives a much more accurate match. Choose &quot;Not
-              sure&quot; if you don&apos;t know — it still works, just less precisely.
-            </p>
-          </div>
-          <div className="grid grid-cols-1 gap-3">
-            <button
-              onClick={() => { setRxOrOtc("RX"); setStage("capture-front"); }}
-              className="px-4 py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition shadow-sm text-base"
-            >
-              Prescription (RX)
-            </button>
-            <button
-              onClick={() => { setRxOrOtc("OTC"); setStage("capture-front"); }}
-              className="px-4 py-3.5 bg-cyan-600 hover:bg-cyan-700 text-white font-bold rounded-2xl transition shadow-sm text-base"
-            >
-              Over-the-counter (OTC)
-            </button>
-            <button
-              onClick={() => { setRxOrOtc(null); setStage("capture-front"); }}
-              className="px-4 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl transition shadow-sm text-base"
-            >
-              Not sure
-            </button>
-          </div>
-        </div>
-      )}
-
       {stage === "capture-front" && (
         <>
           {scanError && (
@@ -222,10 +215,72 @@ export default function Scanner() {
         <ImageCapture
           sideLabel="back"
           allowSkip
-          onSkip={() => runIdentify(frontCanvas, null)}
-          onImageReady={(canvas) => runIdentify(frontCanvas, canvas)}
+          onSkip={() => handleBackDone(frontCanvas, null)}
+          onImageReady={(canvas) => handleBackDone(frontCanvas, canvas)}
           onCancel={() => setStage("capture-front")}
         />
+      )}
+
+      {stage === "imprint" && frontCanvas && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            runIdentify(frontCanvas, backCanvas, [imprintSide1, imprintSide2].join(" ").trim());
+          }}
+          className="max-w-md mx-auto space-y-4 py-4"
+        >
+          <div className="text-center">
+            <p className="text-lg font-bold text-slate-900">What letters or numbers are on the pill?</p>
+            <p className="text-sm text-slate-500 mt-1">
+              This is the most reliable way to identify a pill. Check both sides and correct anything that&apos;s wrong.
+            </p>
+          </div>
+          {imprintReading && (
+            <p className="text-xs text-indigo-600 text-center animate-pulse">Reading the pill from your photo…</p>
+          )}
+          {!imprintReading && (imprintSide1 || imprintSide2) && (
+            <p className="text-xs text-amber-700 text-center">
+              Filled in from your photo. Please check it against the pill.
+            </p>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <label className="text-xs font-semibold text-slate-600">
+              Side 1
+              <input
+                type="text"
+                value={imprintSide1}
+                onChange={(e) => setImprintSide1(e.target.value)}
+                placeholder="e.g. L"
+                className="mt-1 w-full px-3 py-3 border border-slate-300 rounded-xl text-lg font-mono uppercase"
+                autoCapitalize="characters"
+              />
+            </label>
+            <label className="text-xs font-semibold text-slate-600">
+              Side 2
+              <input
+                type="text"
+                value={imprintSide2}
+                onChange={(e) => setImprintSide2(e.target.value)}
+                placeholder="e.g. 5"
+                className="mt-1 w-full px-3 py-3 border border-slate-300 rounded-xl text-lg font-mono uppercase"
+                autoCapitalize="characters"
+              />
+            </label>
+          </div>
+          <button
+            type="submit"
+            className="w-full px-4 py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition shadow-sm text-base"
+          >
+            Find my pill
+          </button>
+          <button
+            type="button"
+            onClick={() => runIdentify(frontCanvas, backCanvas, "")}
+            className="w-full text-sm text-slate-500 hover:text-slate-700 underline"
+          >
+            There are no letters or numbers
+          </button>
+        </form>
       )}
 
       {stage === "identifying" && (
@@ -245,9 +300,9 @@ export default function Scanner() {
           scanTime={scanTime}
           previewUrl={previewUrl}
           predictionId={predictionId}
-          searchMode={searchMode}
-          rxOrOtc={rxOrOtc}
+          imprintSource={imprintSource}
           myPillVerdict={myPillVerdict}
+          onChangeImprint={() => setStage("imprint")}
           onDrop={scheduleDrop}
           onSaveReference={saveAsReference}
           onSaveFromSearch={saveFromSearch}
@@ -266,9 +321,9 @@ function ResultsView({
   scanTime,
   previewUrl,
   predictionId,
-  searchMode,
-  rxOrOtc,
+  imprintSource,
   myPillVerdict,
+  onChangeImprint,
   onDrop,
   onSaveReference,
   onSaveFromSearch,
@@ -281,9 +336,9 @@ function ResultsView({
   scanTime: number | null;
   previewUrl: string | null;
   predictionId: string | null;
-  searchMode: "restricted" | "unrestricted" | null;
-  rxOrOtc: RxOrOtc;
+  imprintSource: ImprintSource;
   myPillVerdict: MyPillVerdict;
+  onChangeImprint: () => void;
   onDrop: (match: PillMatch, bucket: TimeOfDay) => void;
   onSaveReference: (match: PillMatch) => Promise<void>;
   onSaveFromSearch: (result: SearchResult) => Promise<void>;
@@ -373,11 +428,22 @@ function ResultsView({
           </p>
         </div>
       )}
-      {ocrImprintRead && (
-        <p className="text-xs text-slate-400 text-center">
-          Imprint text read from photo: <span className="font-mono">{ocrImprintRead}</span>
-        </p>
-      )}
+      <div className="flex items-center justify-center gap-2 text-xs text-slate-500">
+        {imprintSource === "user" && ocrImprintRead ? (
+          <span>
+            Matched using imprint <span className="font-mono font-bold text-slate-800">{ocrImprintRead}</span>
+          </span>
+        ) : ocrImprintRead ? (
+          <span>
+            Imprint guessed from photo (not checked): <span className="font-mono">{ocrImprintRead}</span>
+          </span>
+        ) : (
+          <span>No imprint used — matched on appearance only</span>
+        )}
+        <button onClick={onChangeImprint} className="text-indigo-600 font-semibold underline">
+          {ocrImprintRead ? "Change" : "Add imprint"}
+        </button>
+      </div>
       {scanTime && (
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center shadow-sm">
           <p className="text-xs text-slate-600 font-medium">
@@ -422,6 +488,13 @@ function ResultsView({
                 className="w-32 h-32"
               />
             </div>
+            {(matches[0].imprint || matches[0].color || matches[0].shape) && (
+              <p className="text-[11px] text-indigo-900 mt-2 leading-snug break-words">
+                {[matches[0].imprint && `Imprint ${matches[0].imprint}`, matches[0].color, matches[0].shape]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+            )}
           </div>
         </div>
       </div>
@@ -494,7 +567,7 @@ function ResultsView({
               key={m.label}
               draggable
               onDragStart={(e) => handleDragStart(e, m)}
-              className="group flex flex-col justify-between rounded-2xl border-2 border-slate-200 hover:border-indigo-500 bg-white p-4 shadow-sm hover:shadow-md cursor-grab active:cursor-grabbing transition-all select-none relative"
+              className="group flex flex-col justify-between min-w-0 rounded-2xl border-2 border-slate-200 hover:border-indigo-500 bg-white p-4 shadow-sm hover:shadow-md cursor-grab active:cursor-grabbing transition-all select-none relative"
               title="Click and drag this box into a time bucket"
             >
               {idx === 0 && (
@@ -510,11 +583,14 @@ function ResultsView({
                 />
                 <div className="min-w-0 flex-1">
                   <p className="font-bold text-slate-900 text-sm truncate">{m.drug_name || m.label}</p>
-                  <p className="text-[11px] text-slate-400 font-mono">NDC: {m.ndc || "N/A"}</p>
+                  <p className="text-[11px] text-slate-400 font-mono truncate">NDC: {m.ndc || "N/A"}</p>
                   {(m.imprint || m.color || m.shape) && (
                     <p className="text-[11px] text-slate-500 truncate">
                       {[m.imprint && `Imprint: ${m.imprint}`, m.color, m.shape].filter(Boolean).join(" · ")}
                     </p>
+                  )}
+                  {imprintSource === "user" && m.imprint_match_score >= 0.99 && (
+                    <p className="text-[11px] font-bold text-emerald-700">✓ Imprint matches what you entered</p>
                   )}
                   <p className="text-xs font-bold text-emerald-600 mt-0.5">{(m.score * 100).toFixed(0)}% visual match</p>
                 </div>
@@ -643,13 +719,6 @@ function ResultsView({
           </>
         )}
       </div>
-
-      {searchMode === "unrestricted" && (
-        <p className="text-[11px] text-slate-400 text-center">
-          Searched the full drug database (category wasn&apos;t specified) — accuracy is typically
-          higher when you tell us RX or OTC up front.
-        </p>
-      )}
 
       <button
         onClick={onRetake}

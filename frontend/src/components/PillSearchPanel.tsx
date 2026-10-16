@@ -46,6 +46,7 @@ export default function PillSearchPanel({
 }) {
   const [mode, setMode] = useState<Mode>(allowNameSearch ? defaultMode : "appearance");
   const [nameQuery, setNameQuery] = useState("");
+  const [nameImprint, setNameImprint] = useState("");
   // Multi-select: many pills are two-toned (e.g. red on one half, blue on
   // the other), so a single color choice isn't enough to describe them.
   const [colors, setColors] = useState<string[]>([]);
@@ -62,7 +63,7 @@ export default function PillSearchPanel({
     if (!nameQuery.trim()) return;
     setStatus("loading");
     try {
-      setResults(await searchByName(nameQuery.trim()));
+      setResults(await searchByName(nameQuery.trim(), nameImprint.trim() || undefined));
       setStatus("idle");
     } catch (err: any) {
       setErrorMsg(err?.message || String(err));
@@ -128,17 +129,29 @@ export default function PillSearchPanel({
       )}
 
       {mode === "name" ? (
-        <form onSubmit={runNameSearch} className="flex gap-2">
+        <form onSubmit={runNameSearch} className="space-y-2">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={nameQuery}
+              onChange={(e) => setNameQuery(e.target.value)}
+              placeholder="e.g. acetaminophen, Janumet, lisinopril..."
+              className="flex-1 min-w-0 px-3 py-2.5 border border-slate-300 rounded-xl text-sm"
+            />
+            <button type="submit" className="px-4 py-2.5 bg-indigo-600 text-white font-semibold rounded-xl text-sm">
+              Search
+            </button>
+          </div>
           <input
             type="text"
-            value={nameQuery}
-            onChange={(e) => setNameQuery(e.target.value)}
-            placeholder="e.g. acetaminophen, Janumet, lisinopril..."
-            className="flex-1 px-3 py-2.5 border border-slate-300 rounded-xl text-sm"
+            value={nameImprint}
+            onChange={(e) => setNameImprint(e.target.value)}
+            placeholder="Letters/numbers on the pill (optional, e.g. L 5)"
+            className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm"
           />
-          <button type="submit" className="px-4 py-2.5 bg-indigo-600 text-white font-semibold rounded-xl text-sm">
-            Search
-          </button>
+          <p className="text-[11px] text-slate-400">
+            Common medicines come in hundreds of versions. Adding the imprint finds the exact one.
+          </p>
         </form>
       ) : (
         <div className="space-y-4">
@@ -279,7 +292,7 @@ export default function PillSearchPanel({
       {results && results.length > 0 && (
         <div className={`grid ${compact ? "grid-cols-1" : "grid-cols-1 sm:grid-cols-2"} gap-3`}>
           {results.map((r) => (
-            <div key={r.label} className="flex gap-3 p-3 bg-white border border-slate-200 rounded-xl shadow-sm">
+            <div key={r.label} className="flex gap-3 p-3 min-w-0 bg-white border border-slate-200 rounded-xl shadow-sm">
               <PillThumb
                 url={r.reference_image_url}
                 kind={r.reference_image_kind}
@@ -287,7 +300,7 @@ export default function PillSearchPanel({
               />
               <div className="min-w-0 flex-1">
                 <p className="font-bold text-slate-900 text-sm truncate">{r.name || r.label}</p>
-                <p className="text-[11px] text-slate-400 font-mono">NDC: {r.ndc || "N/A"}</p>
+                <p className="text-[11px] text-slate-400 font-mono truncate">NDC: {r.ndc || "N/A"}</p>
                 {(r.imprint || r.color || r.shape) && (
                   <p className="text-[11px] text-slate-500 truncate">
                     {[r.imprint && `Imprint: ${r.imprint}`, r.color, r.shape].filter(Boolean).join(" · ")}

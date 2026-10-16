@@ -150,9 +150,9 @@ export default function MainApp({ onResetSession }: MainAppProps) {
               <div className="space-y-3">
                 {schedule.map((entry) => (
                   <div key={entry.id} className="p-4 bg-white border border-slate-200 rounded-xl shadow-sm flex justify-between items-center">
-                    <div>
-                      <h3 className="font-semibold text-slate-800">{entry.drugName || "Unknown Pill"}</h3>
-                      <p className="text-xs text-slate-500">NDC: {entry.ndc || "N/A"}</p>
+                    <div className="min-w-0">
+                      <h3 className="font-semibold text-slate-800 truncate">{entry.drugName || "Unknown Pill"}</h3>
+                      <p className="text-xs text-slate-500 truncate">NDC: {entry.ndc || "N/A"}</p>
                     </div>
                     <span className="text-xs bg-blue-50 text-blue-700 px-3 py-1 rounded-lg border border-blue-200 font-medium capitalize">
                       {entry.bucket}
@@ -278,7 +278,7 @@ export default function MainApp({ onResetSession }: MainAppProps) {
                     />
                     <div className="min-w-0 flex-1">
                       <p className="font-bold text-slate-900 text-sm truncate">{r.drugName}</p>
-                      <p className="text-[11px] text-slate-400 font-mono">NDC: {r.ndc || "N/A"}</p>
+                      <p className="text-[11px] text-slate-400 font-mono truncate">NDC: {r.ndc || "N/A"}</p>
                       {(r.imprint || r.color || r.shape) && (
                         <p className="text-[11px] text-slate-500">
                           {[r.imprint && `Imprint: ${r.imprint}`, r.color, r.shape].filter(Boolean).join(" · ")}

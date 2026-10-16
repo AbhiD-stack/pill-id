@@ -9,7 +9,7 @@ export type PredictionResult = {
   status: string | null;
   score: number;
   score_pct: number;
-  imprint_match_score?: number;
+  imprint_match_score?: number;  // 0-1: how well the candidate's imprint matches the one used
   fused_score?: number;
   reference_image_url: string | null;
   // "pill_photo" = a real photo of the pill; "package" = package/label art
@@ -28,6 +28,9 @@ export type PredictResponse = {
   // mode, 93-98% top10 measured); "unrestricted" = full gallery fallback (89.5%
   // top10), used when rxOrOtc is omitted/"unknown" or not available server-side.
   search_mode: "restricted" | "unrestricted";
+  // Where ocr_imprint_read came from: "user" = typed/confirmed by the user,
+  // "ocr" = read automatically and unconfirmed, null = no imprint used.
+  imprint_source?: "user" | "ocr" | null;
   // One embedding per uploaded side (front, then back). Stored with a pill
   // saved to "My Pills" and compared against future scans on-device. Absent
   // from older backends.
@@ -57,7 +60,8 @@ const apiBase = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
 export async function predictPill(
   file: File,
   fileBack?: File | null,
-  rxOrOtc?: RxOrOtc
+  rxOrOtc?: RxOrOtc,
+  imprint?: string | null
 ): Promise<PredictResponse> {
   const formData = new FormData();
   formData.append("file", file);
@@ -66,6 +70,9 @@ export async function predictPill(
   }
   if (rxOrOtc) {
     formData.append("rx_or_otc", rxOrOtc);
+  }
+  if (imprint && imprint.trim()) {
+    formData.append("imprint", imprint.trim());
   }
 
   const response = await fetch(`${apiBase}/api/predict`, {
@@ -158,6 +165,7 @@ export type PillMatch = {
   shape: string | null;
   score_marks: string | null;
   score: number;
+  imprint_match_score: number;
   reference_image_url: string | null;
   reference_image_kind: ReferenceImageKind;
 };
@@ -167,7 +175,7 @@ export type IdentifyResult = {
   lowConfidence: boolean;
   ocrImprintRead: string | null;
   predictionId: string;
-  searchMode: "restricted" | "unrestricted";
+  imprintSource: "user" | "ocr" | null;
   queryEmbeddings: number[][] | null;
 };
 
@@ -191,12 +199,12 @@ export async function identifyPill(
   canvas: HTMLCanvasElement,
   topN = 5,
   backCanvas?: HTMLCanvasElement | null,
-  rxOrOtc?: RxOrOtc
+  imprint?: string | null
 ): Promise<IdentifyResult> {
   const file = await canvasToFile(canvas);
   const fileBack = backCanvas ? await canvasToFile(backCanvas) : null;
-  const { prediction_id, predictions, low_confidence, ocr_imprint_read, search_mode, query_embeddings } =
-    await predictPill(file, fileBack, rxOrOtc);
+  const { prediction_id, predictions, low_confidence, ocr_imprint_read, imprint_source, query_embeddings } =
+    await predictPill(file, fileBack, null, imprint);
 
   const top = predictions.slice(0, topN);
   const matches = await Promise.all(
@@ -209,6 +217,7 @@ export async function identifyPill(
       shape: p.shape,
       score_marks: p.score_marks,
       score: p.score,
+      imprint_match_score: p.imprint_match_score ?? 0,
       reference_image_kind: p.reference_image_kind ?? null,
       reference_image_url: p.reference_image_url
         ? await fetchSecureImageBlob(referenceImageSrc(p.reference_image_url))
@@ -220,9 +229,30 @@ export async function identifyPill(
     lowConfidence: low_confidence,
     ocrImprintRead: ocr_imprint_read,
     predictionId: prediction_id,
-    searchMode: search_mode,
+    imprintSource: imprint_source ?? null,
     queryEmbeddings: query_embeddings && query_embeddings.length > 0 ? query_embeddings : null,
   };
+}
+
+// The imprint on each side as read from the photos -- a suggestion for the
+// user to confirm or correct before matching.
+export async function readImprint(
+  front: HTMLCanvasElement,
+  back?: HTMLCanvasElement | null
+): Promise<{ side_1: string; side_2: string; source: "vision" | "ocr" }> {
+  const formData = new FormData();
+  formData.append("file", await canvasToFile(front));
+  if (back) formData.append("file_back", await canvasToFile(back));
+  const response = await fetch(`${apiBase}/api/read-imprint`, {
+    method: "POST",
+    body: formData,
+    headers: { "ngrok-skip-browser-warning": "true" },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Imprint read failed with status ${response.status}`);
+  }
+  return response.json();
 }
 
 // Embeddings for a photo saved to "My Pills" before scans returned them.
@@ -256,8 +286,10 @@ async function _resolveSearchResultImages(results: SearchResult[]): Promise<Sear
 
 // "What does <drug name> look like" -- the opposite direction from a photo
 // scan: look a medication up by name and see its known appearance.
-export async function searchByName(query: string): Promise<SearchResult[]> {
-  const response = await fetch(`${apiBase}/api/search-by-name?q=${encodeURIComponent(query)}`, {
+export async function searchByName(query: string, imprint?: string): Promise<SearchResult[]> {
+  const params = new URLSearchParams({ q: query });
+  if (imprint) params.set("imprint", imprint);
+  const response = await fetch(`${apiBase}/api/search-by-name?${params.toString()}`, {
     headers: { "ngrok-skip-browser-warning": "true" },
   });
   if (!response.ok) {
