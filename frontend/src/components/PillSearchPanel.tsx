@@ -39,7 +39,9 @@ export default function PillSearchPanel({
 }) {
   const [mode, setMode] = useState<Mode>(allowNameSearch ? defaultMode : "appearance");
   const [nameQuery, setNameQuery] = useState("");
-  const [color, setColor] = useState<string | null>(null);
+  // Multi-select: many pills are two-toned (e.g. red on one half, blue on
+  // the other), so a single color choice isn't enough to describe them.
+  const [colors, setColors] = useState<string[]>([]);
   const [shape, setShape] = useState<string | null>(null);
   const [imprintSide1, setImprintSide1] = useState("");
   const [imprintSide2, setImprintSide2] = useState("");
@@ -64,12 +66,12 @@ export default function PillSearchPanel({
   async function runAppearanceSearch(e?: React.FormEvent) {
     e?.preventDefault();
     const imprint = [imprintSide1, imprintSide2].filter((s) => s.trim()).join(" ");
-    if (!color && !shape && !imprint && !scoreMarks) return;
+    if (colors.length === 0 && !shape && !imprint && !scoreMarks) return;
     setStatus("loading");
     try {
       setResults(
         await searchByAppearance({
-          color: color ?? undefined,
+          color: colors.length > 0 ? colors.join(",") : undefined,
           shape: shape ?? undefined,
           imprint: imprint || undefined,
           scoreMarks: scoreMarks ?? undefined,
@@ -82,8 +84,12 @@ export default function PillSearchPanel({
     }
   }
 
+  function toggleColor(c: string) {
+    setColors((prev) => (prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]));
+  }
+
   function resetAppearance() {
-    setColor(null);
+    setColors([]);
     setShape(null);
     setImprintSide1("");
     setImprintSide2("");
@@ -156,18 +162,22 @@ export default function PillSearchPanel({
             </div>
           </div>
 
-          {/* Color -- swatch picker */}
+          {/* Color -- swatch picker, multi-select (many pills are two-toned:
+              tap both colors you see, e.g. red AND blue for a half-and-half
+              capsule). */}
           <div>
-            <p className="text-xs font-semibold text-slate-600 mb-1.5">Color</p>
+            <p className="text-xs font-semibold text-slate-600 mb-1.5">
+              Color {colors.length > 1 && <span className="font-normal text-slate-400">(all selected must be present)</span>}
+            </p>
             <div className="flex flex-wrap gap-2">
               {COLOR_OPTIONS.map((c) => (
                 <button
                   key={c.label}
                   type="button"
-                  onClick={() => setColor(color === c.label ? null : c.label)}
+                  onClick={() => toggleColor(c.label)}
                   title={c.label}
                   className={`flex flex-col items-center gap-0.5 px-2.5 py-2 rounded-xl border text-[9px] font-medium transition ${
-                    color === c.label
+                    colors.includes(c.label)
                       ? "bg-indigo-600 border-indigo-600 text-white"
                       : "bg-white border-slate-200 text-slate-600 hover:border-indigo-300"
                   }`}

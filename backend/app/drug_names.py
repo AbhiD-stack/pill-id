@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Optional, TypedDict
 
@@ -107,15 +108,22 @@ class DrugNameLookup:
         separated tokens, matched OR-wise (any token present anywhere in the
         stored imprint counts as a hit) -- a strict substring match on the
         joined string would almost never hit, since the real field doesn't
-        preserve "side order" the way a two-field form naturally implies."""
+        preserve "side order" the way a two-field form naturally implies.
+
+        color supports multiple selections too (comma/space-separated),
+        but AND-matched rather than OR -- e.g. a two-toned capsule that's
+        "red on one half, blue on the other" should only match pills whose
+        stored color is actually both, not any pill that's merely red OR
+        merely blue (which the real data already stores as compound
+        strings like "RED,BLUE" for exactly this case)."""
         simple_criteria = [
-            ("color", color),
             ("shape", shape),
             ("score_marks", score_marks),
         ]
         simple_criteria = [(field, val.strip().lower()) for field, val in simple_criteria if val and val.strip()]
         imprint_tokens = [t.lower() for t in (imprint or "").split() if t.strip()]
-        if not simple_criteria and not imprint_tokens:
+        color_tokens = [t.strip().lower() for t in re.split(r"[,\s]+", color or "") if t.strip()]
+        if not simple_criteria and not imprint_tokens and not color_tokens:
             return []
 
         scored: list[tuple[str, DrugInfo, int]] = []
@@ -129,6 +137,10 @@ class DrugNameLookup:
                 stored_imprint = (info.get("imprint") or "").lower()
                 if stored_imprint and any(tok in stored_imprint for tok in imprint_tokens):
                     count += 1
+            if color_tokens:
+                stored_color = (info.get("color") or "").lower()
+                if stored_color and all(tok in stored_color for tok in color_tokens):
+                    count += len(color_tokens)
             if count > 0:
                 scored.append((label, info, count))
         scored.sort(key=lambda row: row[2], reverse=True)
