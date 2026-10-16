@@ -236,3 +236,6 @@ backend/app/data/ndc_names.checked.json
 backend/app/data/label_image_cache/
 backend/label_photo_preview.html
 backend/thumbnail_preview.html
+
+# Users' scan photos and answers (private data)
+feedback/

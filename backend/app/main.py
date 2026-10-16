@@ -198,18 +198,23 @@ _RECORD_RE = re.compile(r"^[0-9]+_[0-9a-f]{32}$")
 
 def _confirmed_photos(settings) -> list[tuple[str, str]]:
     """(label, feedback record id) for every scan a user confirmed correct."""
-    out = []
     if not settings.feedback_dir.is_dir():
-        return out
-    for meta in sorted(settings.feedback_dir.glob("*.json")):
+        return []
+    # Only the LAST answer for each scan counts: a user may tap "This is my
+    # pill" on one match and then change their mind.
+    latest: dict[str, tuple[str, dict]] = {}
+    for meta in sorted(settings.feedback_dir.glob("*.json")):  # names start with a timestamp
+        if not _RECORD_RE.match(meta.stem):
+            continue
         try:
-            rec = json.loads(meta.read_text())
+            latest[meta.stem.split("_", 1)[1]] = (meta.stem, json.loads(meta.read_text()))
         except (OSError, json.JSONDecodeError):
             continue
-        label = rec.get("reported_label")
-        if rec.get("correct") and label and _RECORD_RE.match(meta.stem) and meta.with_suffix(".jpg").exists():
-            out.append((label, meta.stem))
-    return out
+    return [
+        (rec["reported_label"], stem)
+        for stem, rec in latest.values()
+        if rec.get("correct") and rec.get("reported_label") and (settings.feedback_dir / f"{stem}.jpg").exists()
+    ]
 
 
 def _check_artifacts(clf: DinoV2PillClassifier, drug_names: DrugNameLookup, settings) -> None:
@@ -576,10 +581,17 @@ async def feedback(
     # A confirmed photo becomes the pill's thumbnail right away if the pill
     # has no real photo yet.
     names: DrugNameLookup | None = state.get("drug_names")
+    photos = state.setdefault("photo_by_group", {})
+    by_scan = state.setdefault("confirmed_by_scan", {})
+    # A changed answer for the same scan withdraws the earlier photo.
+    previous = by_scan.pop(prediction_id, None)
+    if previous and photos.get(previous[0]) == ("confirmed", previous[1]):
+        del photos[previous[0]]
     if correct and reported_label and names is not None and names.groups is not None:
         g = names.groups.group_of.get(reported_label)
-        if g is not None and g not in state.setdefault("photo_by_group", {}):
-            state["photo_by_group"][g] = ("confirmed", record_id)
+        if g is not None and g not in photos:
+            photos[g] = ("confirmed", record_id)
+            by_scan[prediction_id] = (g, record_id)
     return {"status": "recorded"}
 
 

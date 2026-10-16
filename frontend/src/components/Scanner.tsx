@@ -1,7 +1,7 @@
 // src/components/Scanner.tsx
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { identifyPill, readImprint, submitFeedback, type PillMatch, type SearchResult } from "@/lib/api";
 import { addReferencePill, getMedications, getReferencePills } from "@/lib/db";
 import { scoreMyPills, judgeMyPillMatch, type MyPillVerdict } from "@/lib/myPills";
@@ -22,7 +22,6 @@ export default function Scanner() {
   const [matches, setMatches] = useState<PillMatch[] | null>(null);
   const [lowConfidence, setLowConfidence] = useState(false);
   const [ocrImprintRead, setOcrImprintRead] = useState<string | null>(null);
-  const [safetyNote, setSafetyNote] = useState<string | null>(null);
   const [scanTime, setScanTime] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [frontCanvas, setFrontCanvas] = useState<HTMLCanvasElement | null>(null);
@@ -76,7 +75,7 @@ export default function Scanner() {
     setScanError(null);
     let result;
     try {
-      result = await identifyPill(front, 5, back, imprint);
+      result = await identifyPill(front, 10, back, imprint);
     } catch (err: any) {
       console.error("Scan failed:", err);
       setScanError(err?.message || String(err));
@@ -109,45 +108,13 @@ export default function Scanner() {
       }
     }
 
-    // Safety check is best-effort and must never roll back a successful
-    // identification just because it itself failed (e.g. the static
-    // beers_criteria.json fetch hiccuped) -- that
-    // used to share a try/catch with the identify call above, so any
-    // failure here silently reset the whole screen back to the capture
-    // step even though the match had already come back fine.
-    const top = result.matches[0];
-    if (top) {
-      vibrate([100, 50, 100]);
-      try {
-        // Checked against the medicines the user already takes.
-        const existing = (await getMedications()).map((m) => m.drugName);
-        const name = top.drug_name || top.label;
-        const { beers, interactions, duplicates } = await fullSafetyCheck(name, existing);
-        const notes: string[] = [];
-        for (const i of interactions) {
-          const other = i.drug_a === name ? i.drug_b : i.drug_a;
-          notes.push(`⚠ With your ${other}: ${i.description}`);
-        }
-        for (const d of duplicates) {
-          const others = d.drugs.filter((x) => x !== name).join(", ");
-          notes.push(`⚠ Your ${others} also contains ${d.ingredient}. Taking both can mean too much of it.`);
-        }
-        if (beers) {
-          notes.push(`⚠ Caution for older adults (${beers.risk_level} risk): ${beers.rationale} ${beers.recommendation}`);
-        }
-        setSafetyNote(notes.length ? notes.join("\n") : null);
-      } catch (err) {
-        console.error("Safety check failed (non-fatal):", err);
-        setSafetyNote(null);
-      }
-    }
+    if (result.matches.length) vibrate([100, 50, 100]);
   };
 
   const resetScanner = () => {
     setMatches(null);
     setLowConfidence(false);
     setOcrImprintRead(null);
-    setSafetyNote(null);
     setScanTime(null);
     setPreviewUrl(null);
     setFrontCanvas(null);
@@ -310,7 +277,6 @@ export default function Scanner() {
           matches={matches}
           lowConfidence={lowConfidence}
           ocrImprintRead={ocrImprintRead}
-          safetyNote={safetyNote}
           scanTime={scanTime}
           previewUrl={previewUrl}
           predictionId={predictionId}
@@ -327,11 +293,26 @@ export default function Scanner() {
   );
 }
 
+// How alike the photos look, in words. Scores are cosine similarity between
+// the user's photo and the pill's reference photos; 0.45 is the server's
+// low-confidence cut-off.
+function likeness(score: number): { text: string; tone: string } {
+  if (score >= 0.75) return { text: "Looks very similar", tone: "text-emerald-700" };
+  if (score >= 0.6) return { text: "Looks similar", tone: "text-emerald-700" };
+  if (score >= 0.45) return { text: "Some resemblance", tone: "text-amber-700" };
+  return { text: "Weak resemblance", tone: "text-slate-500" };
+}
+
+const nameOf = (m: PillMatch) => m.drug_name || m.label;
+
+function describe(m: PillMatch): string {
+  return [m.imprint && `Imprint ${m.imprint}`, m.color, m.shape].filter(Boolean).join(" · ");
+}
+
 function ResultsView({
   matches,
   lowConfidence,
   ocrImprintRead,
-  safetyNote,
   scanTime,
   previewUrl,
   predictionId,
@@ -346,7 +327,6 @@ function ResultsView({
   matches: PillMatch[];
   lowConfidence: boolean;
   ocrImprintRead: string | null;
-  safetyNote: string | null;
   scanTime: number | null;
   previewUrl: string | null;
   predictionId: string | null;
@@ -358,40 +338,193 @@ function ResultsView({
   onSaveFromSearch: (result: SearchResult) => Promise<void>;
   onRetake: () => void;
 }) {
-  const [feedbackState, setFeedbackState] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [chosen, setChosen] = useState<PillMatch | null>(null);
+  const [showMore, setShowMore] = useState(false);
+  const [notHere, setNotHere] = useState(false);
+  const [comparing, setComparing] = useState<number | null>(null);
   const [savedLabels, setSavedLabels] = useState<Set<string>>(new Set());
-  const [showAppearanceSearch, setShowAppearanceSearch] = useState(false);
-  const [showSaveSearch, setShowSaveSearch] = useState(false);
   const [savedFromSearch, setSavedFromSearch] = useState<string | null>(null);
+  const [safetyNotes, setSafetyNotes] = useState<string[] | null>(null);
+  const [lastSent, setLastSent] = useState<string | null>(null);
 
-  async function sendFeedback(correct: boolean, reportedLabel?: string | null) {
-    if (!predictionId || feedbackState === "sending" || feedbackState === "sent") return;
-    setFeedbackState("sending");
+  const first = matches.slice(0, 5);
+  const more = matches.slice(5, 10);
+  const showMatchedImprint = imprintSource === "user";
+
+  // Every answer goes back to the server (best-effort). The confirmed photo
+  // becomes that pill's reference picture, and only the latest answer for
+  // a scan counts, so changing your mind is fine.
+  async function sendFeedback(correct: boolean, label?: string) {
+    const key = correct ? `yes:${label}` : "no";
+    if (!predictionId || lastSent === key) return;
+    setLastSent(key);
     try {
-      await submitFeedback(predictionId, correct, reportedLabel);
-      setFeedbackState("sent");
+      await submitFeedback(predictionId, correct, label);
     } catch (err) {
-      // Best-effort: feedback failing should never disrupt the scan result
-      // the user is already looking at.
-      console.error("Feedback submission failed:", err);
-      setFeedbackState("error");
+      console.error("Feedback submission failed (non-fatal):", err);
     }
   }
 
-  return (
-    <div className="space-y-6 max-w-3xl mx-auto pb-12">
-      {myPillVerdict && (
-        <div
-          className={`rounded-2xl p-4 shadow-sm border-2 ${
-            myPillVerdict.kind === "strong" ? "bg-emerald-50 border-emerald-400" : "bg-amber-50 border-amber-300"
-          }`}
-        >
-          <p
-            className={`text-xs font-bold uppercase tracking-wider ${
-              myPillVerdict.kind === "strong" ? "text-emerald-700" : "text-amber-700"
-            }`}
+  function choose(m: PillMatch) {
+    setChosen(m);
+    setComparing(null);
+    setNotHere(false);
+    vibrate([60, 40, 60]);
+    sendFeedback(true, m.label);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  // Safety check for the pill the user picked, against the medicines they
+  // already take. Best-effort: a failure just shows nothing.
+  useEffect(() => {
+    if (!chosen) return;
+    let cancelled = false;
+    setSafetyNotes(null);
+    (async () => {
+      try {
+        const name = nameOf(chosen);
+        const existing = (await getMedications()).map((m) => m.drugName);
+        const { beers, interactions, duplicates } = await fullSafetyCheck(name, existing);
+        const notes: string[] = [];
+        for (const i of interactions) {
+          const other = i.drug_a === name ? i.drug_b : i.drug_a;
+          notes.push(`With your ${other}: ${i.description}`);
+        }
+        for (const d of duplicates) {
+          const others = d.drugs.filter((x) => x !== name).join(", ");
+          notes.push(`Your ${others} also contains ${d.ingredient}. Taking both can mean too much of it.`);
+        }
+        if (beers) notes.push(`Caution for older adults (${beers.risk_level} risk): ${beers.rationale} ${beers.recommendation}`);
+        if (!cancelled) setSafetyNotes(notes);
+      } catch (err) {
+        console.error("Safety check failed (non-fatal):", err);
+        if (!cancelled) setSafetyNotes([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [chosen]);
+
+  async function saveRef(m: PillMatch) {
+    setSavedLabels((prev) => new Set(prev).add(m.label));
+    try {
+      await onSaveReference(m);
+    } catch (err) {
+      console.error("Saving to My Pills failed:", err);
+      setSavedLabels((prev) => {
+        const next = new Set(prev);
+        next.delete(m.label);
+        return next;
+      });
+    }
+  }
+
+  // ---- After the user picked their pill -------------------------------
+  if (chosen) {
+    return (
+      <div className="space-y-5 max-w-xl mx-auto pb-12">
+        <div className="bg-emerald-50 border-2 border-emerald-400 rounded-2xl p-5 space-y-4">
+          <p className="text-sm font-bold text-emerald-800 uppercase tracking-wider">✓ Your pill</p>
+          <div className="grid grid-cols-2 gap-3">
+            <PhotoBox label="Your photo" src={previewUrl} />
+            <div className="text-center">
+              <p className="text-xs font-bold text-slate-500 mb-1">Reference</p>
+              <PillThumb url={chosen.reference_image_url} kind={chosen.reference_image_kind} alt={nameOf(chosen)} className="w-full aspect-square" />
+            </div>
+          </div>
+          <div>
+            <p className="text-2xl font-bold text-slate-900 break-words">{nameOf(chosen)}</p>
+            {describe(chosen) && <p className="text-base text-slate-700 mt-1 break-words">{describe(chosen)}</p>}
+            {chosen.also_sold_as.length > 0 && (
+              <p className="text-sm text-slate-600 mt-1 break-words">Same pill also sold as: {chosen.also_sold_as.join(", ")}</p>
+            )}
+            {chosen.ndc && <p className="text-xs text-slate-400 font-mono mt-1 truncate">NDC {chosen.ndc}</p>}
+          </div>
+          <button
+            onClick={() => speak(`${nameOf(chosen)}. ${describe(chosen)}`)}
+            className="w-full py-3 bg-white border border-emerald-300 text-emerald-800 font-bold rounded-xl"
           >
-            {myPillVerdict.kind === "strong" ? "✓ Matches a pill in My Pills" : "Could be a pill in My Pills"}
+            🔊 Read aloud
+          </button>
+        </div>
+
+        {safetyNotes === null ? (
+          <p className="text-sm text-slate-500 text-center">Checking against your medicines…</p>
+        ) : safetyNotes.length > 0 ? (
+          <div className="bg-red-50 border-2 border-red-300 rounded-2xl p-4 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-base font-bold text-red-900">⚠ Talk to your doctor or pharmacist</p>
+              <button onClick={() => speak(safetyNotes.join(". "))} className="shrink-0 px-2 py-1 text-red-800" aria-label="Read warnings aloud">
+                🔊
+              </button>
+            </div>
+            <ul className="space-y-2">
+              {safetyNotes.map((n) => (
+                <li key={n} className="text-sm text-red-900 leading-snug">• {n}</li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <p className="text-sm text-emerald-700 text-center">✓ No known problems with the medicines you have added.</p>
+        )}
+
+        <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3">
+          <AddToMedsButton drugName={nameOf(chosen)} ndc={chosen.ndc} />
+          <button
+            onClick={() => saveRef(chosen)}
+            disabled={savedLabels.has(chosen.label) || !previewUrl}
+            className="w-full py-3 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold rounded-xl disabled:opacity-60"
+          >
+            {savedLabels.has(chosen.label) ? "📌 Saved to My Pills" : "📌 Save my photo to My Pills"}
+          </button>
+          <p className="text-xs text-slate-500 text-center">
+            Saving your photo helps the next scan of this pill find it instantly.
+          </p>
+        </div>
+
+        <button onClick={onRetake} className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white text-lg font-bold rounded-2xl">
+          📷 Scan another pill
+        </button>
+        <button onClick={() => setChosen(null)} className="w-full text-base text-indigo-700 underline">
+          That&apos;s not my pill — go back to the matches
+        </button>
+      </div>
+    );
+  }
+
+  // ---- Choosing ---------------------------------------------------------
+  const visible = showMore ? [...first, ...more] : first;
+  return (
+    <div className="space-y-5 max-w-xl mx-auto pb-12">
+      <div className="flex items-center gap-4 bg-white border border-slate-200 rounded-2xl p-4">
+        <PhotoBox label="Your photo" src={previewUrl} className="w-24" />
+        <div className="min-w-0">
+          <h2 className="text-xl font-bold text-slate-900">Which one is your pill?</h2>
+          <p className="text-sm text-slate-600 mt-1">
+            Compare the pictures and the letters on your pill. Tap <strong>This is my pill</strong> on the one that matches.
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-600">
+        {showMatchedImprint && ocrImprintRead ? (
+          <span>
+            Searched with imprint <span className="font-mono font-bold text-slate-900">{ocrImprintRead}</span>
+          </span>
+        ) : (
+          <span>Searched by appearance only (no imprint).</span>
+        )}
+        <button onClick={onChangeImprint} className="text-indigo-700 font-semibold underline">
+          {showMatchedImprint && ocrImprintRead ? "Change" : "Add the imprint"}
+        </button>
+        {scanTime !== null && <span className="text-xs text-slate-400 ml-auto">{(scanTime / 1000).toFixed(1)} s</span>}
+      </div>
+
+      {myPillVerdict && (
+        <div className={`rounded-2xl p-4 border-2 ${myPillVerdict.kind === "strong" ? "bg-emerald-50 border-emerald-400" : "bg-amber-50 border-amber-300"}`}>
+          <p className={`text-sm font-bold ${myPillVerdict.kind === "strong" ? "text-emerald-800" : "text-amber-800"}`}>
+            {myPillVerdict.kind === "strong" ? "✓ Looks like a pill you saved" : "Might be a pill you saved"}
           </p>
           <div className="flex items-center gap-3 mt-2">
             <img
@@ -400,306 +533,307 @@ function ResultsView({
               className="w-16 h-16 rounded-xl border border-slate-200 object-contain bg-white p-1 shrink-0"
             />
             <div className="min-w-0">
-              <p className="font-bold text-slate-900 truncate">{myPillVerdict.match.pill.drugName}</p>
+              <p className="font-bold text-slate-900 break-words">{myPillVerdict.match.pill.drugName}</p>
               <p className="text-xs text-slate-600">
-                {(myPillVerdict.match.score * 100).toFixed(0)}% match to the photo you saved on{" "}
-                {new Date(myPillVerdict.match.pill.savedAt).toLocaleDateString()}
+                Your photo saved {new Date(myPillVerdict.match.pill.savedAt).toLocaleDateString()}
               </p>
             </div>
           </div>
           {myPillVerdict.runnerUp && (
-            <p className="text-xs text-amber-800 mt-2">
-              Also very close: <strong>{myPillVerdict.runnerUp.pill.drugName}</strong>. These two look alike, so
-              compare the photos carefully.
-            </p>
-          )}
-          {myPillVerdict.kind === "possible" && (
-            <p className="text-xs text-amber-800 mt-2">
-              Not a confident match. Compare it with your saved photo before relying on it.
+            <p className="text-sm text-amber-900 mt-2">
+              Also close: <strong>{myPillVerdict.runnerUp.pill.drugName}</strong>. These look alike — check carefully.
             </p>
           )}
         </div>
       )}
+
       {imprintSource === "user" && imprintFound === false && (
-        <div className="bg-amber-50 border-l-4 border-amber-500 rounded-r-xl p-4 shadow-sm">
-          <p className="text-sm text-amber-900 font-semibold">
-            No pill in our database has the imprint &quot;{ocrImprintRead}&quot;.
-          </p>
-          <p className="text-xs text-amber-800 mt-1">
-            Check it for typos (0 vs O, 1 vs I, 5 vs S) and tap Change. The matches below are based on the photo
-            only.
+        <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4">
+          <p className="text-base font-bold text-amber-900">No pill has the imprint &quot;{ocrImprintRead}&quot;</p>
+          <p className="text-sm text-amber-900 mt-1">
+            Check for mix-ups like 0 and O, 1 and I, 5 and S, then tap Change. The matches below use the photo only.
           </p>
         </div>
       )}
       {lowConfidence && (
-        <div className="bg-red-50 border-l-4 border-red-500 rounded-r-xl p-4 shadow-sm">
-          <p className="text-sm text-red-900 font-semibold">
-            ⚠ Weak visual match — none of these candidates closely match the photo.
-          </p>
-          <p className="text-xs text-red-800 mt-1">
-            Do not act on this result. Retake with better lighting/focus, or confirm with a
-            pharmacist and the physical packaging.
-          </p>
-        </div>
-      )}
-      <div className="flex items-center justify-center gap-2 text-xs text-slate-500">
-        {imprintSource === "user" && ocrImprintRead ? (
-          <span>
-            Matched using imprint <span className="font-mono font-bold text-slate-800">{ocrImprintRead}</span>
-          </span>
-        ) : ocrImprintRead ? (
-          <span>
-            Imprint guessed from photo (not checked): <span className="font-mono">{ocrImprintRead}</span>
-          </span>
-        ) : (
-          <span>No imprint used — matched on appearance only</span>
-        )}
-        <button onClick={onChangeImprint} className="text-indigo-600 font-semibold underline">
-          {ocrImprintRead ? "Change" : "Add imprint"}
-        </button>
-      </div>
-      {scanTime && (
-        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center shadow-sm">
-          <p className="text-xs text-slate-600 font-medium">
-            ⚡ Identified in <strong className="text-slate-900">{scanTime}ms</strong>
+        <div className="bg-red-50 border-2 border-red-300 rounded-2xl p-4">
+          <p className="text-base font-bold text-red-900">⚠ No close match</p>
+          <p className="text-sm text-red-900 mt-1">
+            None of these look very much like your photo. Adding the imprint or retaking the photo in good light usually
+            helps. Don&apos;t take a pill you can&apos;t identify — ask a pharmacist.
           </p>
         </div>
       )}
 
-      {/* Side-by-Side Comparison */}
-      <div className="bg-white border-2 border-slate-200 rounded-2xl p-5 shadow-md">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wider">
-            Comparison View
-          </h3>
+      {matches.length === 0 && (
+        <p className="text-base text-slate-700 text-center py-6">No matches found. Try the options below.</p>
+      )}
+
+      <div className="space-y-4">
+        {visible.map((m, idx) => (
+          <MatchCard
+            key={m.label}
+            match={m}
+            rank={idx + 1}
+            showImprintMatch={showMatchedImprint}
+            onChoose={() => choose(m)}
+            onCompare={() => setComparing(idx)}
+          />
+        ))}
+      </div>
+
+      {more.length > 0 && (
+        <button
+          onClick={() => setShowMore((v) => !v)}
+          aria-expanded={showMore}
+          className="w-full py-4 bg-white border-2 border-slate-300 text-slate-800 text-base font-bold rounded-2xl"
+        >
+          {showMore ? "▲ Show fewer matches" : `▼ Not here? Show ${more.length} more matches`}
+        </button>
+      )}
+
+      {/* Everything for "my pill isn't in the list", in one place. */}
+      <div className="bg-white border-2 border-slate-200 rounded-2xl p-4 space-y-3">
+        {!notHere ? (
           <button
-            onClick={() => speak(`Top match: ${matches[0].drug_name || matches[0].label}. Confidence: ${(matches[0].score * 100).toFixed(0)} percent.`)}
-            className="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold px-3 py-1 rounded-lg transition flex items-center gap-1"
+            onClick={() => {
+              setNotHere(true);
+              sendFeedback(false);
+            }}
+            className="w-full py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-800 text-base font-bold rounded-xl"
           >
-            🔊 Read Aloud
+            ✗ My pill isn&apos;t here
+          </button>
+        ) : (
+          <NotHerePanel
+            onRetake={onRetake}
+            onChangeImprint={onChangeImprint}
+            hasImprint={showMatchedImprint && !!ocrImprintRead}
+            savedFromSearch={savedFromSearch}
+            onSaveFromSearch={async (r) => {
+              try {
+                await onSaveFromSearch(r);
+                setSavedFromSearch(r.name || r.label);
+              } catch (err) {
+                console.error("Saving to My Pills failed:", err);
+              }
+            }}
+          />
+        )}
+      </div>
+
+      <button onClick={onRetake} className="w-full py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl">
+        📷 Scan another pill
+      </button>
+
+      {comparing !== null && visible[comparing] && (
+        <CompareModal
+          matches={visible}
+          index={comparing}
+          previewUrl={previewUrl}
+          showImprintMatch={showMatchedImprint}
+          onIndex={setComparing}
+          onChoose={choose}
+          onClose={() => setComparing(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function PhotoBox({ label, src, className = "w-full" }: { label: string; src: string | null; className?: string }) {
+  return (
+    <div className={`${className} shrink-0 text-center`}>
+      <p className="text-xs font-bold text-slate-500 mb-1">{label}</p>
+      {src ? (
+        <img src={src} alt={label} className="w-full aspect-square object-contain rounded-xl border border-slate-200 bg-white" />
+      ) : (
+        <div className="w-full aspect-square rounded-xl bg-slate-100" />
+      )}
+    </div>
+  );
+}
+
+function MatchCard({
+  match: m,
+  rank,
+  showImprintMatch,
+  onChoose,
+  onCompare,
+}: {
+  match: PillMatch;
+  rank: number;
+  showImprintMatch: boolean;
+  onChoose: () => void;
+  onCompare: () => void;
+}) {
+  const like = likeness(m.score);
+  const imprintMatches = showImprintMatch && m.imprint_match_score >= 0.99;
+  return (
+    <div className={`rounded-2xl border-2 bg-white p-4 shadow-sm space-y-3 ${imprintMatches ? "border-emerald-300" : "border-slate-200"}`}>
+      <div className="flex gap-4">
+        <button onClick={onCompare} className="shrink-0 relative" aria-label={`Compare ${nameOf(m)} with your photo`}>
+          <PillThumb url={m.reference_image_url} kind={m.reference_image_kind} alt={nameOf(m)} className="w-28 h-28" />
+          <span className="absolute -top-2 -left-2 w-7 h-7 rounded-full bg-slate-800 text-white text-sm font-bold flex items-center justify-center">
+            {rank}
+          </span>
+        </button>
+        <div className="min-w-0 flex-1">
+          <p className="text-lg font-bold text-slate-900 leading-snug break-words">{nameOf(m)}</p>
+          {describe(m) && <p className="text-sm text-slate-700 mt-0.5 break-words">{describe(m)}</p>}
+          {imprintMatches && <p className="text-sm font-bold text-emerald-700 mt-1">✓ Imprint matches yours</p>}
+          <p className={`text-sm font-semibold mt-1 ${like.tone}`}>
+            {like.text} <span className="font-normal text-slate-400">({Math.round(m.score * 100)}%)</span>
+          </p>
+          {m.also_sold_as.length > 0 && (
+            <p className="text-xs text-slate-500 mt-1 line-clamp-2 break-words">Also sold as: {m.also_sold_as.join(", ")}</p>
+          )}
+        </div>
+      </div>
+      <div className="grid grid-cols-5 gap-2">
+        <button
+          onClick={onChoose}
+          className="col-span-3 py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white text-base font-bold rounded-xl"
+        >
+          ✓ This is my pill
+        </button>
+        <button onClick={onCompare} className="col-span-2 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-800 text-base font-bold rounded-xl">
+          🔍 Compare
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Full-screen side-by-side check: your photo above, the reference below,
+// with arrows to step through the matches.
+function CompareModal({
+  matches,
+  index,
+  previewUrl,
+  showImprintMatch,
+  onIndex,
+  onChoose,
+  onClose,
+}: {
+  matches: PillMatch[];
+  index: number;
+  previewUrl: string | null;
+  showImprintMatch: boolean;
+  onIndex: (i: number) => void;
+  onChoose: (m: PillMatch) => void;
+  onClose: () => void;
+}) {
+  const m = matches[index];
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowRight" && index < matches.length - 1) onIndex(index + 1);
+      if (e.key === "ArrowLeft" && index > 0) onIndex(index - 1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [index, matches.length, onClose, onIndex]);
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-slate-900/70 flex items-end sm:items-center justify-center" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="bg-white w-full sm:max-w-md max-h-[100dvh] overflow-y-auto rounded-t-3xl sm:rounded-3xl p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-bold text-slate-500">
+            Match {index + 1} of {matches.length}
+          </p>
+          <button onClick={onClose} className="px-3 py-1.5 bg-slate-100 rounded-xl text-base font-bold text-slate-700" aria-label="Close">
+            ✕ Close
           </button>
         </div>
-        <div className="grid grid-cols-2 gap-4 items-center">
-          <div className="text-center bg-slate-50 p-3 rounded-xl border border-slate-200">
-            <p className="text-xs font-bold text-slate-500 mb-2">Your Photo Scan</p>
-            {previewUrl ? (
-              <img
-                src={previewUrl}
-                alt="Your scan"
-                className="w-32 h-32 object-contain mx-auto rounded-lg border border-slate-300 bg-white shadow-inner"
-              />
-            ) : (
-              <div className="w-32 h-32 bg-slate-200 rounded-lg mx-auto flex items-center justify-center text-slate-400">No Image</div>
-            )}
-          </div>
-          <div className="text-center bg-indigo-50/55 p-3 rounded-xl border border-indigo-200">
-            <p className="text-xs font-bold text-indigo-700 mb-2">Top Match Reference</p>
-            <div className="flex justify-center">
-              <PillThumb
-                url={matches[0].reference_image_url}
-                kind={matches[0].reference_image_kind}
-                alt={matches[0].drug_name || matches[0].label}
-                className="w-32 h-32"
-              />
-            </div>
-            {(matches[0].imprint || matches[0].color || matches[0].shape) && (
-              <p className="text-[11px] text-indigo-900 mt-2 leading-snug break-words">
-                {[matches[0].imprint && `Imprint ${matches[0].imprint}`, matches[0].color, matches[0].shape]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </p>
-            )}
+        <div className="grid grid-cols-2 gap-3">
+          <PhotoBox label="Your photo" src={previewUrl} />
+          <div className="text-center">
+            <p className="text-xs font-bold text-slate-500 mb-1">Match {index + 1}</p>
+            <PillThumb url={m.reference_image_url} kind={m.reference_image_kind} alt={nameOf(m)} className="w-full aspect-square" />
           </div>
         </div>
+        <div>
+          <p className="text-xl font-bold text-slate-900 break-words">{nameOf(m)}</p>
+          {describe(m) && <p className="text-base text-slate-700 break-words">{describe(m)}</p>}
+          {showImprintMatch && m.imprint_match_score >= 0.99 && (
+            <p className="text-sm font-bold text-emerald-700 mt-1">✓ Imprint matches yours</p>
+          )}
+          {m.reference_image_kind === "package" && (
+            <p className="text-xs text-slate-500 mt-1">Only a package photo is available for this pill. Check the imprint and color.</p>
+          )}
+        </div>
+        <button onClick={() => onChoose(m)} className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white text-lg font-bold rounded-2xl">
+          ✓ This is my pill
+        </button>
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            onClick={() => onIndex(index - 1)}
+            disabled={index === 0}
+            className="py-3 bg-slate-100 text-slate-800 font-bold rounded-xl disabled:opacity-40"
+          >
+            ← Previous
+          </button>
+          <button
+            onClick={() => onIndex(index + 1)}
+            disabled={index === matches.length - 1}
+            className="py-3 bg-slate-100 text-slate-800 font-bold rounded-xl disabled:opacity-40"
+          >
+            Next →
+          </button>
+        </div>
       </div>
+    </div>
+  );
+}
 
-      {safetyNote && (
-        <div className="bg-red-50 border-l-4 border-red-500 rounded-r-xl p-4 shadow-sm">
-          <div className="flex items-start justify-between">
-            <p className="text-sm text-red-900 font-medium whitespace-pre-line">{safetyNote}</p>
-            <button
-              onClick={() => speak(safetyNote)}
-              className="text-xs bg-red-100 hover:bg-red-200 text-red-800 font-bold px-2 py-1 rounded transition shrink-0 ml-2"
-            >
-              🔊 Read
-            </button>
-          </div>
+function NotHerePanel({
+  onRetake,
+  onChangeImprint,
+  hasImprint,
+  savedFromSearch,
+  onSaveFromSearch,
+}: {
+  onRetake: () => void;
+  onChangeImprint: () => void;
+  hasImprint: boolean;
+  savedFromSearch: string | null;
+  onSaveFromSearch: (r: SearchResult) => Promise<void>;
+}) {
+  const [open, setOpen] = useState<"appearance" | "name" | null>(null);
+  return (
+    <div className="space-y-3">
+      <p className="text-base font-bold text-slate-900">Let&apos;s find it another way</p>
+      <button onClick={onChangeImprint} className="w-full py-3.5 bg-indigo-600 text-white text-base font-bold rounded-xl text-left px-4">
+        🔤 {hasImprint ? "Check the letters/numbers I typed" : "Type the letters/numbers on the pill"}
+        <span className="block text-xs font-normal opacity-90">The best way to find a pill</span>
+      </button>
+      <button onClick={onRetake} className="w-full py-3.5 bg-slate-100 text-slate-800 text-base font-bold rounded-xl text-left px-4">
+        📷 Retake the photo
+        <span className="block text-xs font-normal text-slate-500">Good light, plain background, pill filling the box</span>
+      </button>
+      <button
+        onClick={() => setOpen(open === "appearance" ? null : "appearance")}
+        aria-expanded={open === "appearance"}
+        className="w-full py-3.5 bg-slate-100 text-slate-800 text-base font-bold rounded-xl text-left px-4"
+      >
+        🎨 Describe its color and shape
+      </button>
+      {open === "appearance" && <PillSearchPanel compact allowNameSearch={false} />}
+      <button
+        onClick={() => setOpen(open === "name" ? null : "name")}
+        aria-expanded={open === "name"}
+        className="w-full py-3.5 bg-slate-100 text-slate-800 text-base font-bold rounded-xl text-left px-4"
+      >
+        📌 I know its name — save my photo
+        <span className="block text-xs font-normal text-slate-500">Next time this pill is recognized from your photo</span>
+      </button>
+      {open === "name" && (
+        <div className="space-y-2">
+          {savedFromSearch && <p className="text-sm text-emerald-700 font-semibold">✓ Saved {savedFromSearch} to My Pills.</p>}
+          <PillSearchPanel compact defaultMode="name" selectLabel="📌 Save as my pill" onSelect={onSaveFromSearch} />
         </div>
       )}
-
-      {/* Square Match Cards Grid */}
-      <div className="space-y-3 pt-2">
-        <p className="text-sm font-bold text-slate-700 uppercase tracking-wider">
-          Top Matches
-        </p>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {matches.map((m, idx) => (
-            <div
-              key={m.label}
-              className="flex flex-col justify-between min-w-0 rounded-2xl border-2 border-slate-200 bg-white p-4 shadow-sm relative"
-            >
-              {idx === 0 && (
-                <span className="absolute top-2 right-2 bg-indigo-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
-                  Top Match
-                </span>
-              )}
-              <div className="flex items-center gap-3">
-                <PillThumb
-                  url={m.reference_image_url}
-                  kind={m.reference_image_kind}
-                  alt={m.drug_name || m.label}
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="font-bold text-slate-900 text-sm truncate">{m.drug_name || m.label}</p>
-                  <p className="text-[11px] text-slate-400 font-mono truncate">NDC: {m.ndc || "N/A"}</p>
-                  {m.also_sold_as.length > 0 && (
-                    <p className="text-[11px] text-slate-500 truncate" title={m.also_sold_as.join(", ")}>
-                      Also sold as: {m.also_sold_as.join(", ")}
-                    </p>
-                  )}
-                  {(m.imprint || m.color || m.shape) && (
-                    <p className="text-[11px] text-slate-500 truncate">
-                      {[m.imprint && `Imprint: ${m.imprint}`, m.color, m.shape].filter(Boolean).join(" · ")}
-                    </p>
-                  )}
-                  {imprintSource === "user" && m.imprint_match_score >= 0.99 && (
-                    <p className="text-[11px] font-bold text-emerald-700">✓ Imprint matches what you entered</p>
-                  )}
-                  <p className="text-xs font-bold text-emerald-600 mt-0.5">{(m.score * 100).toFixed(0)}% visual match</p>
-                </div>
-              </div>
-
-              <div className="mt-3">
-                <AddToMedsButton drugName={m.drug_name || m.label} ndc={m.ndc} />
-              </div>
-              <div className="mt-2 flex items-center justify-end gap-2">
-                <button
-                  onClick={() => speak(`${m.drug_name || m.label}, visual match ${(m.score * 100).toFixed(0)} percent`)}
-                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
-                  title="Read Aloud"
-                >
-                  🔊
-                </button>
-                <button
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    setSavedLabels((prev) => new Set(prev).add(m.label));
-                    try {
-                      await onSaveReference(m);
-                    } catch (err) {
-                      console.error("Saving to My Pills failed:", err);
-                      setSavedLabels((prev) => {
-                        const next = new Set(prev);
-                        next.delete(m.label);
-                        return next;
-                      });
-                    }
-                  }}
-                  disabled={savedLabels.has(m.label)}
-                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition disabled:opacity-50"
-                  title="Save this photo to My Pills -- future scans of this pill are matched against your own photo"
-                >
-                  {savedLabels.has(m.label) ? "📌 Saved" : "📌 Save to My Pills"}
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Fallback for when the right pill genuinely isn't in the top matches
-          above -- describe its color/shape/imprint/score marks instead and
-          search the same metadata directly (no photo similarity involved). */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-4">
-        <button
-          onClick={() => setShowAppearanceSearch((v) => !v)}
-          className="w-full text-center text-sm font-semibold text-indigo-600"
-        >
-          {showAppearanceSearch ? "▲ Hide" : "▼ Don't see your pill? Describe its appearance instead"}
-        </button>
-        {showAppearanceSearch && (
-          <div className="mt-4">
-            <PillSearchPanel compact allowNameSearch={false} />
-          </div>
-        )}
-      </div>
-
-      {/* Save to My Pills even when the right pill isn't among the matches:
-          look it up by name and attach this photo to it. That's exactly the
-          case My Pills fixes -- next time, this photo is the reference. */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-4">
-        <button
-          onClick={() => setShowSaveSearch((v) => !v)}
-          className="w-full text-center text-sm font-semibold text-indigo-600"
-        >
-          {showSaveSearch ? "▲ Hide" : "📌 Know what this pill is? Save it to My Pills"}
-        </button>
-        {showSaveSearch && (
-          <div className="mt-4 space-y-3">
-            <p className="text-xs text-slate-500">
-              Search for your medication and tap &quot;Save as my pill&quot;. This photo becomes its reference, so the
-              next scan of this pill is matched against your own photo.
-            </p>
-            {savedFromSearch && (
-              <p className="text-sm text-emerald-700 font-medium">✓ Saved {savedFromSearch} to My Pills.</p>
-            )}
-            <PillSearchPanel
-              compact
-              defaultMode="name"
-              selectLabel="📌 Save as my pill"
-              onSelect={async (r) => {
-                try {
-                  await onSaveFromSearch(r);
-                  setSavedFromSearch(r.name || r.label);
-                } catch (err) {
-                  console.error("Saving to My Pills failed:", err);
-                }
-              }}
-            />
-          </div>
-        )}
-      </div>
-
-      {/* Feedback: this is currently the ONLY source of real phone-photo
-          accuracy data this app collects -- every accuracy number behind
-          this model was measured on curated/studio-style photos, not real
-          user scans. Keep this low-friction; don't block or nag. */}
-      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-center space-y-2">
-        {feedbackState === "sent" ? (
-          <p className="text-sm text-emerald-700 font-medium">Thanks — that helps us improve matches.</p>
-        ) : (
-          <>
-            <p className="text-xs font-bold text-slate-600 uppercase tracking-wider">Was this match right?</p>
-            <div className="flex items-center justify-center gap-2">
-              <button
-                onClick={() => sendFeedback(true, matches[0]?.label)}
-                disabled={feedbackState === "sending" || !predictionId}
-                className="px-4 py-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 font-bold rounded-xl text-xs transition disabled:opacity-50"
-              >
-                ✓ Yes, correct
-              </button>
-              <button
-                onClick={() => sendFeedback(false)}
-                disabled={feedbackState === "sending" || !predictionId}
-                className="px-4 py-2 bg-red-100 hover:bg-red-200 text-red-800 font-bold rounded-xl text-xs transition disabled:opacity-50"
-              >
-                ✗ None of these
-              </button>
-            </div>
-            {feedbackState === "error" && (
-              <p className="text-xs text-slate-400">Couldn&apos;t send feedback — no worries, continue as normal.</p>
-            )}
-          </>
-        )}
-      </div>
-
-      <button
-        onClick={onRetake}
-        className="w-full px-4 py-3.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl transition shadow-sm text-base"
-      >
-        Scan Another Pill
-      </button>
     </div>
   );
 }
