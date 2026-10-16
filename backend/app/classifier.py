@@ -67,6 +67,14 @@ class ProjectionHead(nn.Module):
         return {"emb": emb, "logits": logits}
 
 
+# Gallery images from non-US datasets that slipped into the V3 gallery
+# despite the US-only data policy (pill-scanner/data/DATA_SOURCES.md): a
+# Philippine drugstore set (~43k images, 21 local brands such as Tempra,
+# Decolgen). Never shown to US users, and they used to crowd real US pills
+# out of the candidate shortlist, so they are dropped at load.
+NON_US_SOURCES = ("pharmaceutical-drugs-and-vitamins-dataset",)
+
+
 class DinoV2PillClassifier:
     def __init__(self, model_dir: Path, device: str = "auto", lora_adapter_dir: Optional[Path] = None,
                  label_meta_path: Optional[Path] = None):
@@ -133,6 +141,13 @@ class DinoV2PillClassifier:
         self.ref_label_indices = ref_data["label_indices"].to(self.device)
         self.label_strings = np.array(ckpt["label_classes"])
         self.ref_abs_paths = np.array(ref_data["abs_paths"])
+        drop = np.array([any(s in str(p) for s in NON_US_SOURCES) for p in self.ref_abs_paths])
+        if drop.any():
+            keep = torch.from_numpy(~drop).to(self.device)
+            self.ref_embeddings = self.ref_embeddings[keep]
+            self.ref_label_indices = self.ref_label_indices[keep]
+            self.ref_abs_paths = self.ref_abs_paths[~drop]
+            print(f"[classifier] Left out {int(drop.sum())} gallery images from non-US datasets.")
 
         self.num_reference_pills = int(self.label_strings.shape[0])
         print(
