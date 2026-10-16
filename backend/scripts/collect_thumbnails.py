@@ -10,9 +10,8 @@
                                   is scored and the most pill-like one
                                   wins (and line art is rejected).
 
-The backend shows a pill/ photo when one exists; otherwise the app draws
-the pill from its shape/color/imprint and keeps the package/ image one tap
-away.
+The backend shows a real pill photo when one exists (for any listing of the
+same physical pill); otherwise the package/ image, labeled "Package photo".
 
 Usage (from backend/, with .venv activated):
     python scripts/collect_thumbnails.py --dailymed "C:\\...\\dailymed_images"
