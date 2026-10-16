@@ -46,13 +46,19 @@ export default function LookPicker({
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
           <p className="text-sm text-amber-900 flex flex-wrap items-center gap-1.5">
             Our camera thinks it&apos;s
-            {suggestion.colors.map((c) => (
+            {suggestion.colors.map((c, i) => (
               <span key={c} className="inline-flex items-center gap-1 font-bold">
+                {i > 0 && <span className="font-normal">and</span>}
                 <span className="w-4 h-4 rounded-full border border-slate-400" style={{ background: swatch(c) }} />
                 {nice(c)}
               </span>
             ))}
-            {suggestion.shape && <span className="font-bold">· {nice(suggestion.shape)}</span>}
+            {suggestion.shape && (
+              <span className="font-bold">
+                {suggestion.colors.length > 0 && <span className="font-normal">· </span>}
+                {nice(suggestion.shape)}
+              </span>
+            )}
           </p>
           <p className="text-xs text-amber-800">Lighting can change colors. Only use it if it matches your pill.</p>
           <button

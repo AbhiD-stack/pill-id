@@ -305,7 +305,7 @@ export default function PillSearchPanel({
                 alt={r.name || r.label}
               />
               <div className="min-w-0 flex-1">
-                <p className="font-bold text-slate-900 text-sm truncate">{r.name || r.label}</p>
+                <p className="font-bold text-slate-900 text-sm truncate">{r.name || `Name not on file (NDC ${r.ndc || r.label})`}</p>
                 <p className="text-[11px] text-slate-400 font-mono truncate">NDC: {r.ndc || "N/A"}</p>
                 {r.also_sold_as && r.also_sold_as.length > 0 && (
                   <p className="text-[11px] text-slate-500 truncate" title={r.also_sold_as.join(", ")}>
@@ -328,7 +328,7 @@ export default function PillSearchPanel({
                 )}
                 {addToMeds && (
                   <div className="mt-2">
-                    <AddToMedsButton drugName={r.name || r.label} ndc={r.ndc} onAdded={onAdded} />
+                    <AddToMedsButton drugName={r.name || `NDC ${r.ndc || r.label}`} ndc={r.ndc} onAdded={onAdded} />
                   </div>
                 )}
               </div>

@@ -70,6 +70,26 @@ export interface PillLook {
   shape: string | null;
 }
 
+// A readable error for the person using the app (the server's own message
+// when it sent one, never raw HTML/JSON).
+async function apiError(response: Response, what: string): Promise<Error> {
+  let detail = "";
+  try {
+    const text = await response.text();
+    try {
+      const body = JSON.parse(text);
+      if (typeof body.detail === "string") detail = body.detail;
+    } catch {
+      if (!text.trimStart().startsWith("<")) detail = text.slice(0, 200);
+    }
+  } catch {
+    // body unreadable
+  }
+  if (response.status === 429) return new Error(detail || "Too many requests. Please wait a moment and try again.");
+  if (response.status >= 500) return new Error(`The server had a problem (${what}). Please try again in a moment.`);
+  return new Error(detail || `${what} failed (error ${response.status}).`);
+}
+
 export async function predictPill(
   file: File,
   fileBack?: File | null,
@@ -105,8 +125,7 @@ export async function predictPill(
   });
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Prediction request failed with status ${response.status}`);
+    throw await apiError(response, "Prediction");
   }
 
   return (await response.json()) as PredictResponse;
@@ -137,8 +156,7 @@ export async function submitFeedback(
     headers: { "ngrok-skip-browser-warning": "true" },
   });
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Feedback request failed with status ${response.status}`);
+    throw await apiError(response, "Feedback");
   }
 }
 
@@ -274,8 +292,7 @@ export async function readImprint(
     headers: { "ngrok-skip-browser-warning": "true" },
   });
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Imprint read failed with status ${response.status}`);
+    throw await apiError(response, "Imprint read");
   }
   return response.json();
 }
@@ -291,8 +308,7 @@ export async function embedPhoto(photoDataUrl: string): Promise<number[][]> {
     headers: { "ngrok-skip-browser-warning": "true" },
   });
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Embed request failed with status ${response.status}`);
+    throw await apiError(response, "Embed");
   }
   const { embeddings } = (await response.json()) as { embeddings: number[][] };
   return embeddings;
@@ -318,8 +334,7 @@ export async function searchByName(query: string, imprint?: string): Promise<Sea
     headers: { "ngrok-skip-browser-warning": "true" },
   });
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Search failed with status ${response.status}`);
+    throw await apiError(response, "Search");
   }
   const { results } = (await response.json()) as { results: SearchResult[] };
   return _resolveSearchResultImages(results);
@@ -344,8 +359,7 @@ export async function searchByAppearance(criteria: {
     headers: { "ngrok-skip-browser-warning": "true" },
   });
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Search failed with status ${response.status}`);
+    throw await apiError(response, "Search");
   }
   const { results } = (await response.json()) as { results: SearchResult[] };
   return _resolveSearchResultImages(results);

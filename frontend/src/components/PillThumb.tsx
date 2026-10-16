@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 // Reference thumbnail on match/search cards. Only ever shows a real image:
 // a photo of the pill itself when one exists (C3PI / ePillID), otherwise
 // the product's package/label photo, labeled as such so it isn't mistaken
@@ -16,8 +18,9 @@ export default function PillThumb({
   className?: string;
 }) {
   const frame = `${className} rounded-xl border border-slate-200 bg-white shrink-0 relative overflow-hidden`;
+  const [failed, setFailed] = useState<string | null>(null);
 
-  if (!url) {
+  if (!url || failed === url) {
     return (
       <div className={`${frame} bg-slate-50 flex items-center justify-center text-slate-300 text-[10px]`}>No image</div>
     );
@@ -25,7 +28,7 @@ export default function PillThumb({
 
   return (
     <div className={frame}>
-      <img src={url} alt={alt} className="w-full h-full object-contain p-1" />
+      <img src={url} alt={alt} className="w-full h-full object-contain p-1" onError={() => setFailed(url)} />
       {kind === "package" && (
         <span className="absolute bottom-0 inset-x-0 bg-slate-900/60 text-white text-[8px] leading-tight text-center py-px">
           Package photo

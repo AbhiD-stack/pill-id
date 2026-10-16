@@ -28,10 +28,17 @@ echo [2/3] Starting the server in a new window (it takes a minute to load the mo
 start "Pill ID server" cmd /k "call backend\.venv\Scripts\activate.bat && cd backend\app && python main.py"
 
 echo Waiting for the server to be ready...
+set /a tries=0
 :wait
 timeout /t 5 /nobreak >nul
-curl -s http://127.0.0.1:8000/api/health | find "\"ok\"" >nul
-if errorlevel 1 goto wait
+set /a tries+=1
+curl -s -f http://127.0.0.1:8000/api/health >nul 2>nul
+if not errorlevel 1 goto ready
+if %tries% LSS 60 goto wait
+echo The server did not start within 5 minutes. Look at the "Pill ID server" window for the error.
+pause
+exit /b 1
+:ready
 
 echo [3/3] Opening the public link. Look for the line ending in .trycloudflare.com below,
 echo and open that address + /v3/  (for example https://xxxx.trycloudflare.com/v3/)

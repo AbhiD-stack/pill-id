@@ -24,6 +24,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Respo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
+import numpy as np
 import torch
 
 from classifier import DinoV2PillClassifier
@@ -32,11 +33,12 @@ from collections import defaultdict
 
 from drug_names import DrugNameLookup, color_agreement, dedupe_pills, display_ndc, ndc_from_ref_path, shape_agreement
 from pill_groups import PillGroups
-from pill_features import analyze as analyze_pill
+from pill_features import FDA_COLORS, FDA_SHAPES, analyze as analyze_pill
 from imprint_match import ocr_engine, read_imprint_text, score_imprint_match, warm_up_ocr
 from imprint_vision import read_imprint_with_vision, vision_available
 from reference_images import ReferenceImageStore, map_to_zip_path
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
+_MAX_IMPRINT = 60  # typed imprint, both sides; real ones are far shorter
 
 # Populated in the lifespan handler.
 state: dict = {"classifier": None, "ref_store": None, "drug_names": None}
@@ -122,6 +124,7 @@ async def lifespan(app: FastAPI):
     # results, lends info and photos across listings).
     groups = attach_pill_groups(state["classifier"], state["drug_names"])
     print(f"[startup] {len(groups.group_of)} listings -> {len(groups.members)} distinct pills.")
+    state["drug_names"].appearance_index(state["classifier"].label_strings)  # color/shape lookups
     _build_thumbnail_maps(settings)
 
     # Load the OCR model now, not on the first scan (EasyOCR's first call
@@ -474,6 +477,10 @@ def identify(clf: DinoV2PillClassifier, drug_names: DrugNameLookup, images: list
     top = ranked[0] if ranked else None
     imprint_backed = top is not None and source == "user" and top[2].score >= 0.99
     low_confidence = top is None or (not imprint_backed and top[0].score < settings.low_confidence_threshold)
+    # A blank / featureless photo (lens covered, all background) can still
+    # produce "matches"; never present those as confident.
+    if float(np.asarray(images[0].convert("L").resize((64, 64)), dtype=np.float32).std()) < 4:
+        low_confidence = True
     return Identification(query_embs, ranked, text, source, imprint_found, low_confidence)
 
 
@@ -483,13 +490,13 @@ async def predict(
     file: UploadFile = File(None),
     file_back: UploadFile = File(None),
     rx_or_otc: str | None = Form(None),  # "RX" | "OTC" | None/omitted == "don't know"
-    imprint: str | None = Form(None),  # imprint the user typed/confirmed, e.g. "L 5"
+    imprint: str | None = Form(None, max_length=_MAX_IMPRINT),  # imprint the user typed/confirmed, e.g. "L 5"
     # True when the user went through the imprint step. With no imprint it
     # means "this pill has no letters/numbers" (an empty form field arrives
     # as None, so emptiness alone can't say that).
     imprint_confirmed: bool = Form(False),
-    colors: str | None = Form(None),  # colors the user confirmed, e.g. "RED,BLUE"
-    shape: str | None = Form(None),  # shape the user confirmed, e.g. "CAPSULE"
+    colors: str | None = Form(None, max_length=60),  # colors the user confirmed, e.g. "RED,BLUE"
+    shape: str | None = Form(None, max_length=30),  # shape the user confirmed, e.g. "CAPSULE"
 ):  # file = front/primary side (required); file_back = optional reverse side.
     # Set the bypass cookie to destroy the localtunnel landing wall permanently
     response.set_cookie(key="bypass-tunnel-reminder", value="true", path="/")
@@ -508,10 +515,13 @@ async def predict(
     drug_names: DrugNameLookup = state["drug_names"]
 
     images = [image, back_image] if back_image is not None else [image]
-    color_list = [c.strip().upper() for c in (colors or "").split(",") if c.strip()][:2] or None
+    # Only real FDA color/shape words count; anything else is ignored.
+    color_list = [c for c in dict.fromkeys(c.strip().upper() for c in (colors or "").split(","))
+                  if c in FDA_COLORS][:2] or None
+    shape_word = (shape or "").strip().upper()
     ident = identify(clf, drug_names, images, imprint=imprint,
                      imprint_confirmed=imprint_confirmed, rx_or_otc=rx_or_otc,
-                     colors=color_list, shape=(shape or "").strip().upper() or None)
+                     colors=color_list, shape=shape_word if shape_word in FDA_SHAPES else None)
     fused = ident.ranked[: settings.top_k]
     query_embs, ocr_text, imprint_source = ident.query_embs, ident.imprint_text, ident.imprint_source
 
@@ -746,9 +756,9 @@ def _build_search_result(label: str, info: dict) -> dict:
 
 @app.get("/api/search-by-name")
 def search_by_name(
-    q: str = Query(..., min_length=1),
-    imprint: str | None = Query(None),
-    limit: int = Query(30, le=50),
+    q: str = Query(..., min_length=1, max_length=100),
+    imprint: str | None = Query(None, max_length=_MAX_IMPRINT),
+    limit: int = Query(30, ge=1, le=50),
 ):
     """Look a medication up by name instead of a photo -- 'what does X look
     like' rather than 'what is this'. imprint optionally narrows it down."""
@@ -759,11 +769,11 @@ def search_by_name(
 
 @app.get("/api/search-by-appearance")
 def search_by_appearance(
-    color: str | None = Query(None),
-    shape: str | None = Query(None),
-    imprint: str | None = Query(None),
-    score_marks: str | None = Query(None),
-    limit: int = Query(20, le=50),
+    color: str | None = Query(None, max_length=60),
+    shape: str | None = Query(None, max_length=30),
+    imprint: str | None = Query(None, max_length=_MAX_IMPRINT),
+    score_marks: str | None = Query(None, max_length=4),
+    limit: int = Query(20, ge=1, le=50),
 ):
     """Fallback for when the photo-based match misses: describe what the
     pill looks like (color/shape/imprint/score marks) and search the same

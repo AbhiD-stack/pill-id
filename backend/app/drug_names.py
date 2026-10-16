@@ -289,11 +289,13 @@ class DrugNameLookup:
         stored color is actually both, not any pill that's merely red OR
         merely blue (which the real data already stores as compound
         strings like "RED,BLUE" for exactly this case)."""
+        # Shape and score marks must equal the record (a substring test made
+        # "x" match "hexagon").
         simple_criteria = [
-            ("shape", shape),
-            ("score_marks", score_marks),
+            ("shape", _shape_word(shape)),
+            ("score_marks", (score_marks or "").strip().lower()),
         ]
-        simple_criteria = [(field, val.strip().lower()) for field, val in simple_criteria if val and val.strip()]
+        simple_criteria = [(field, val) for field, val in simple_criteria if val]
         imprint_tokens = _imprint_tokens(imprint)
         color_tokens = [t.strip().lower() for t in re.split(r"[,\s]+", color or "") if t.strip()]
         if not simple_criteria and not imprint_tokens and not color_tokens:
@@ -306,8 +308,8 @@ class DrugNameLookup:
         for label, info in self._table.items():
             count = 0
             for field, val in simple_criteria:
-                field_val = (info.get(field) or "").lower()
-                if field_val and val in field_val:
+                stored = _shape_word(info.get(field)) if field == "shape" else (info.get(field) or "").strip().lower()
+                if stored and stored == val:
                     count += 1
             if imprint_tokens:
                 # Each typed token that equals one of the pill's imprint
@@ -339,20 +341,32 @@ class DrugNameLookup:
         """Labels (from the given set, e.g. the model's) whose FDA color AND
         shape agree with what the user confirmed. Unknown fields don't
         exclude; a label with neither field known isn't returned."""
+        index = self.appearance_index(labels)
+        mine = frozenset(c.lower() for c in colors or [])
+        want = _shape_word(shape)
+        family = {"oval", "capsule"} if want in ("oval", "capsule") else {want}
+        out = []
+        for l, (c, s) in index.items():
+            # A confirmed color must be on record and the same; a missing
+            # shape record is common (~10%) and doesn't exclude.
+            if mine and c != mine:
+                continue
+            if want and s and s not in family:
+                continue
+            if (mine and c) or (want and s):
+                out.append(l)
+        return out
+
+    def appearance_index(self, labels) -> dict[str, tuple[frozenset, str]]:
+        """label -> (FDA color words, shape word), built once (the server
+        builds it at startup so the first scan isn't slow)."""
         if not hasattr(self, "_appearance"):
             self._appearance = {}
             for l in labels:
                 info = self.display_info(str(l))
                 if info and (info.get("color") or info.get("shape")):
-                    self._appearance[str(l)] = (info.get("color"), info.get("shape"))
-        out = []
-        for l, (c, s) in self._appearance.items():
-            ca, sa = color_agreement(colors, c), shape_agreement(shape, s)
-            # A confirmed color must be on record; a missing shape record is
-            # common (~10%) and doesn't exclude.
-            if (ca == 1.0 if colors else ca is None) and (sa is None or sa >= 0.5) and (colors or sa is not None):
-                out.append(l)
-        return out
+                    self._appearance[str(l)] = (frozenset(_color_set(info.get("color"))), _shape_word(info.get("shape")))
+        return self._appearance
 
     @property
     def imprint_vocab(self) -> set[str]:

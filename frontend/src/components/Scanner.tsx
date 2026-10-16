@@ -84,7 +84,11 @@ export default function Scanner() {
       result = await identifyPill(front, 10, back, imprint, look);
     } catch (err: any) {
       console.error("Scan failed:", err);
-      setScanError(err?.message || String(err));
+      setScanError(
+        err instanceof TypeError
+          ? "Can't reach the Pill ID server. Check your internet connection and try again."
+          : err?.message || String(err)
+      );
       setStage("capture-front");
       return;
     }
@@ -240,6 +244,7 @@ export default function Scanner() {
                 value={imprintSide1}
                 onChange={(e) => setImprintSide1(e.target.value)}
                 placeholder="e.g. L"
+                maxLength={30}
                 className="mt-1 w-full px-3 py-3 border border-slate-300 rounded-xl text-lg font-mono uppercase"
                 autoCapitalize="characters"
               />
@@ -251,6 +256,7 @@ export default function Scanner() {
                 value={imprintSide2}
                 onChange={(e) => setImprintSide2(e.target.value)}
                 placeholder="e.g. 5"
+                maxLength={30}
                 className="mt-1 w-full px-3 py-3 border border-slate-300 rounded-xl text-lg font-mono uppercase"
                 autoCapitalize="characters"
               />
@@ -315,7 +321,8 @@ function likeness(score: number): { text: string; tone: string } {
   return { text: "Weak resemblance", tone: "text-slate-500" };
 }
 
-const nameOf = (m: PillMatch) => m.drug_name || m.label;
+// A listing with no drug name on file shows that plainly, never a bare code.
+const nameOf = (m: PillMatch) => m.drug_name || `Name not on file (NDC ${m.ndc || m.label})`;
 
 function describe(m: PillMatch): string {
   return [m.imprint && `Imprint ${m.imprint}`, m.color, m.shape].filter(Boolean).join(" · ");
@@ -395,8 +402,12 @@ function ResultsView({
     let cancelled = false;
     setSafetyNotes(null);
     (async () => {
+      if (!chosen.drug_name) {
+        if (!cancelled) setSafetyNotes(["We don't have this medicine's name on file, so it can't be checked against your other medicines. Ask your pharmacist."]);
+        return;
+      }
       try {
-        const name = nameOf(chosen);
+        const name = chosen.drug_name;
         const existing = (await getMedications()).map((m) => m.drugName);
         const { beers, interactions, duplicates } = await fullSafetyCheck(name, existing);
         const notes: string[] = [];
@@ -484,7 +495,7 @@ function ResultsView({
         )}
 
         <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3">
-          <AddToMedsButton drugName={nameOf(chosen)} ndc={chosen.ndc} />
+          <AddToMedsButton drugName={chosen.drug_name || `NDC ${chosen.ndc || chosen.label}`} ndc={chosen.ndc} />
           <button
             onClick={() => saveRef(chosen)}
             disabled={savedLabels.has(chosen.label) || !previewUrl}

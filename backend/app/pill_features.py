@@ -29,6 +29,8 @@ except ImportError:  # opencv comes with easyocr; without it there is no reading
 # The FDA (SPL) color vocabulary.
 FDA_COLORS = ("WHITE", "GRAY", "BLACK", "RED", "PINK", "ORANGE", "YELLOW",
               "BROWN", "GREEN", "TURQUOISE", "BLUE", "PURPLE")
+FDA_SHAPES = ("ROUND", "OVAL", "CAPSULE", "RECTANGLE", "TRIANGLE", "SQUARE", "DIAMOND", "HEXAGON",
+              "PENTAGON", "OCTAGON", "TEAR", "BULLET", "FREEFORM", "DOUBLE CIRCLE", "SEMI-CIRCLE", "TRAPEZOID")
 
 
 # Measured on 993 real phone photos (ePillID consumer set) against the FDA
@@ -82,13 +84,20 @@ def _largest_component(mask: np.ndarray) -> np.ndarray:
 
 def _segment(rgb: np.ndarray) -> Optional[np.ndarray]:
     h, w = rgb.shape[:2]
+    if min(h, w) < 16 or rgb.astype(np.float32).std() < 1.5:  # blank / nearly blank photo
+        return None
     m = max(2, int(round(min(h, w) * 0.04)))
     mask = np.full((h, w), cv2.GC_PR_FGD, np.uint8)
     mask[:m, :] = mask[-m:, :] = cv2.GC_BGD
     mask[:, :m] = mask[:, -m:] = cv2.GC_BGD
     bgd, fgd = np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64)
+    # GrabCut's color models never converge (it hangs) on regions of exactly
+    # identical pixels -- e.g. a flat studio background. A +-2 level of fixed
+    # noise, invisible in the result, keeps them well-defined.
+    noise = np.random.default_rng(0).integers(-2, 3, rgb.shape, dtype=np.int16)
+    jittered = np.clip(rgb.astype(np.int16) + noise, 0, 255).astype(np.uint8)
     try:
-        cv2.grabCut(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), mask, None, bgd, fgd, 4, cv2.GC_INIT_WITH_MASK)
+        cv2.grabCut(cv2.cvtColor(jittered, cv2.COLOR_RGB2BGR), mask, None, bgd, fgd, 4, cv2.GC_INIT_WITH_MASK)
     except cv2.error:
         return None
     fg = (mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD)
@@ -119,7 +128,6 @@ def _white_balance(rgb: np.ndarray, fg: np.ndarray) -> np.ndarray:
 
 def _name_color(rgb_center: np.ndarray) -> str:
     """FDA color word for one RGB color."""
-    r, g, b = (float(x) for x in rgb_center)
     hsv = cv2.cvtColor(np.uint8([[rgb_center]]), cv2.COLOR_RGB2HSV)[0, 0]
     hue, sat, val = float(hsv[0]) * 2.0, float(hsv[1]) / 255.0, float(hsv[2]) / 255.0
     if val < 0.18:
