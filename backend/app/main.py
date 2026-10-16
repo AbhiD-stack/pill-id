@@ -80,6 +80,19 @@ async def lifespan(app: FastAPI):
         print(f"[startup] No usable reference-image zip at {settings.dataset_zip_path} -- "
               "predictions will omit thumbnails.")
         state["ref_store"] = None
+    # label -> a real ePillID pill photo inside the dataset zip, so label-
+    # keyed lookups (search results, or a match whose *winning* reference
+    # image happened to be DailyMed box art) can still show a real photo
+    # when one exists for that label.
+    state["epillid_by_label"] = {}
+    if state["ref_store"] is not None:
+        clf = state["classifier"]
+        label_idx = clf.ref_label_indices.cpu().numpy()
+        for i, path in enumerate(clf.ref_abs_paths):
+            zp = map_to_zip_path(str(path))
+            if zp.startswith("ePillID_data/") and state["ref_store"].has(zp):
+                state["epillid_by_label"].setdefault(str(clf.label_strings[label_idx[i]]), zp)
+        print(f"[startup] Real ePillID pill photos available for {len(state['epillid_by_label'])} labels.")
     state["drug_names"] = DrugNameLookup()
     settings.feedback_dir.mkdir(parents=True, exist_ok=True)
     print("[startup] Ready.")
@@ -113,18 +126,22 @@ def health():
 
 
 def _resolve_thumbnail_url(label: str, ref_path: str | None, ref_store: ReferenceImageStore | None) -> str | None:
-    """Prefer the label-keyed thumbnails/ folder (scripts/collect_thumbnails.py,
-    built from the DailyMed acquisition output -- covers ~91% of priority-tier
-    labels) and fall back to the old ePillID-zip-only path matching (covers
-    the much smaller ePillID-sourced slice of the gallery, keyed to the exact
-    winning reference image rather than the label)."""
+    """Real pill photos win over package art. Order:
+      1. the exact winning reference image, if it's a real ePillID photo;
+      2. any real ePillID photo for the label (epillid_by_label);
+      3. the label-keyed thumbnails/ folder (scripts/collect_thumbnails.py --
+         C3PI studio photos when available, otherwise the most pill-like
+         DailyMed image, which is usually package/label art)."""
     settings = get_settings()
-    if (settings.thumbnails_dir / f"{label}.jpg").exists():
-        return f"/api/thumbnail?label={quote(label)}"
     if ref_store is not None and ref_path is not None:
         zip_path = map_to_zip_path(ref_path)
-        if ref_store.has(zip_path):
+        if zip_path.startswith("ePillID_data/") and ref_store.has(zip_path):
             return f"/api/reference-image?path={quote(zip_path)}"
+    zip_path = state.get("epillid_by_label", {}).get(label)
+    if zip_path is not None:
+        return f"/api/reference-image?path={quote(zip_path)}"
+    if (settings.thumbnails_dir / f"{label}.jpg").exists():
+        return f"/api/thumbnail?label={quote(label)}"
     return None
 
 
