@@ -177,13 +177,20 @@ class DinoV2PillClassifier:
         return F.normalize(emb, dim=1)
 
     @torch.no_grad()
-    def _best_per_label(self, image: Image.Image, label_mask: Optional[torch.Tensor] = None
+    def embed_images(self, images: List[Image.Image]) -> torch.Tensor:
+        """(n, embedding_dim) L2-normalized embeddings, one row per image --
+        the same space as the reference gallery, so callers can also compare
+        against their own saved pill photos ("My Pills")."""
+        return torch.cat([self._embed(img) for img in images], dim=0)
+
+    @torch.no_grad()
+    def _best_per_label(self, query_emb: torch.Tensor, label_mask: Optional[torch.Tensor] = None
                          ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Returns (scores_by_label, similarities) for a single query image.
-        label_mask (True = included), when given, excludes everything else by
-        forcing it to -inf -- same effect as not having those labels in the
-        gallery, without needing a second copy of ref_embeddings per mode."""
-        query_emb = self._embed(image)
+        """Returns (scores_by_label, similarities) for a single (1, d) query
+        embedding. label_mask (True = included), when given, excludes
+        everything else by forcing it to -inf -- same effect as not having
+        those labels in the gallery, without needing a second copy of
+        ref_embeddings per mode."""
         similarities = (query_emb @ self.ref_embeddings.T).squeeze(0)
         scores_by_label = torch.full(
             (self.label_strings.shape[0],), -torch.inf, device=self.device
@@ -233,8 +240,15 @@ class DinoV2PillClassifier:
         other value (None, "unknown", or a category with no loaded mask)
         falls back to the full unrestricted gallery -- always available,
         just measured lower (~89.5% top10)."""
+        return self.predict_topk_from_embeddings(self.embed_images(images), k=k, rx_or_otc=rx_or_otc)
+
+    @torch.no_grad()
+    def predict_topk_from_embeddings(self, query_embs: torch.Tensor, k: int = 10,
+                                     rx_or_otc: Optional[str] = None) -> List[Prediction]:
+        """predict_topk_multi for already-computed embed_images() output, so
+        a caller that also needs the embeddings doesn't run the backbone twice."""
         label_mask = self._restricted_masks.get(rx_or_otc) if rx_or_otc else None
-        per_image = [self._best_per_label(img, label_mask=label_mask) for img in images]
+        per_image = [self._best_per_label(q.unsqueeze(0), label_mask=label_mask) for q in query_embs]
         scores_by_label = torch.stack([s for s, _ in per_image], dim=0).mean(dim=0)
         similarities_per_image = [sims for _, sims in per_image]
 

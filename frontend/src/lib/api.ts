@@ -23,6 +23,10 @@ export type PredictResponse = {
   // mode, 93-98% top10 measured); "unrestricted" = full gallery fallback (89.5%
   // top10), used when rxOrOtc is omitted/"unknown" or not available server-side.
   search_mode: "restricted" | "unrestricted";
+  // One embedding per uploaded side (front, then back). Stored with a pill
+  // saved to "My Pills" and compared against future scans on-device. Absent
+  // from older backends.
+  query_embeddings?: number[][];
 };
 
 // "RX" | "OTC" restricts the search to that category's priority-tier drugs
@@ -156,6 +160,7 @@ export type IdentifyResult = {
   ocrImprintRead: string | null;
   predictionId: string;
   searchMode: "restricted" | "unrestricted";
+  queryEmbeddings: number[][] | null;
 };
 
 export function canvasToFile(canvas: HTMLCanvasElement, quality = 0.9): Promise<File> {
@@ -182,7 +187,7 @@ export async function identifyPill(
 ): Promise<IdentifyResult> {
   const file = await canvasToFile(canvas);
   const fileBack = backCanvas ? await canvasToFile(backCanvas) : null;
-  const { prediction_id, predictions, low_confidence, ocr_imprint_read, search_mode } =
+  const { prediction_id, predictions, low_confidence, ocr_imprint_read, search_mode, query_embeddings } =
     await predictPill(file, fileBack, rxOrOtc);
 
   const top = predictions.slice(0, topN);
@@ -206,7 +211,26 @@ export async function identifyPill(
     ocrImprintRead: ocr_imprint_read,
     predictionId: prediction_id,
     searchMode: search_mode,
+    queryEmbeddings: query_embeddings && query_embeddings.length > 0 ? query_embeddings : null,
   };
+}
+
+// Embeddings for a photo saved to "My Pills" before scans returned them.
+export async function embedPhoto(photoDataUrl: string): Promise<number[][]> {
+  const blob = await (await fetch(photoDataUrl)).blob();
+  const formData = new FormData();
+  formData.append("file", new File([blob], "pill.jpg", { type: blob.type || "image/jpeg" }));
+  const response = await fetch(`${apiBase}/api/embed`, {
+    method: "POST",
+    body: formData,
+    headers: { "ngrok-skip-browser-warning": "true" },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Embed request failed with status ${response.status}`);
+  }
+  const { embeddings } = (await response.json()) as { embeddings: number[][] };
+  return embeddings;
 }
 
 async function _resolveSearchResultImages(results: SearchResult[]): Promise<SearchResult[]> {

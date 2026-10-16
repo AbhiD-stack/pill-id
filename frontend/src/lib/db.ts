@@ -35,6 +35,10 @@ export interface ReferencePill {
   color?: string;
   shape?: string;
   photoDataUrl: string; // the user's own captured photo, base64 data URL
+  // Model embeddings of the photo(s) (front, then back if captured). Future
+  // scans are compared against these on-device ("My Pills" matching).
+  // Missing on pills saved before that existed -- backfilled via /api/embed.
+  embeddings?: number[][];
   savedAt: number;
   notes?: string;
 }
@@ -128,6 +132,11 @@ export async function getReferencePills(): Promise<ReferencePill[]> {
   const db = await getDb();
   const all = await db.getAll("referencePills");
   return all.sort((a, b) => b.savedAt - a.savedAt);
+}
+
+export async function updateReferencePill(pill: ReferencePill) {
+  const db = await getDb();
+  await db.put("referencePills", pill);
 }
 
 export async function deleteReferencePill(id: string) {

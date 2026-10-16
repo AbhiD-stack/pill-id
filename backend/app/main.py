@@ -3,6 +3,7 @@
 Endpoints:
   GET  /api/health            -> service + model status
   POST /api/predict           -> identify a pill from an uploaded image
+  POST /api/embed             -> embeddings for a saved "My Pills" photo
   GET  /api/reference-image   -> matched reference pill thumbnail (from dataset zip)
 
 The model is loaded once at startup and kept warm in memory.
@@ -190,7 +191,8 @@ async def predict(
     # against) -- omitted/unrecognized falls back to the full unrestricted
     # gallery (~89.5% top10), which is always available.
     images = [image, back_image] if back_image is not None else [image]
-    pool = clf.predict_topk_multi(images, k=settings.rerank_pool_size, rx_or_otc=rx_or_otc)
+    query_embs = clf.embed_images(images)
+    pool = clf.predict_topk_from_embeddings(query_embs, k=settings.rerank_pool_size, rx_or_otc=rx_or_otc)
 
     # Try OCR on both sides and pool the tokens; imprint codes are often split
     # across the front and back faces (e.g. maker mark on one, strength on
@@ -261,7 +263,30 @@ async def predict(
         "ocr_imprint_read": ocr_text,
         "low_confidence": top_fused_score < settings.low_confidence_threshold,
         "search_mode": "restricted" if clf.has_restricted_mode(rx_or_otc) else "unrestricted",
+        # Front (and back, if sent) embeddings: the client stores these with a
+        # pill the user saves to "My Pills" and compares future scans against
+        # them on-device -- the user's own photo of their own pill is a far
+        # closer reference than the gallery, which for most drugs only has
+        # package art.
+        "query_embeddings": _embeddings_json(query_embs),
     }
+
+
+def _embeddings_json(embs) -> list[list[float]]:
+    return [[round(v, 5) for v in row] for row in embs.cpu().tolist()]
+
+
+@app.post("/api/embed")
+async def embed(file: UploadFile = File(...), file_back: UploadFile = File(None)):
+    """Embeddings for a saved "My Pills" photo that doesn't have them yet
+    (saved before matching against My Pills existed)."""
+    clf: DinoV2PillClassifier | None = state["classifier"]
+    if clf is None:
+        raise HTTPException(status_code=503, detail="Model is still loading; try again shortly.")
+    images = [await _read_image(file)]
+    if file_back is not None:
+        images.append(await _read_image(file_back))
+    return {"embeddings": _embeddings_json(clf.embed_images(images))}
 
 
 _RECENT_PREDICTIONS_MAX = 200

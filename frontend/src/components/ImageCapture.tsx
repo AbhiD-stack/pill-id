@@ -287,9 +287,20 @@ export default function ImageCapture({
         <div className="bg-blue-50 border-2 border-dashed border-blue-300 rounded-lg p-6 text-center">
           <div className="text-4xl mb-3">📸</div>
           <h3 className="font-semibold text-slate-900 mb-2">
-            {sideLabel ? `Capture the ${sideLabel} of the pill` : "Upload or Capture Pill Image"}
+            {sideLabel === "front"
+              ? "Photograph the side with letters or numbers"
+              : sideLabel === "back"
+                ? "Now flip the pill over and photograph the other side"
+                : sideLabel
+                  ? `Capture the ${sideLabel} of the pill`
+                  : "Upload or Capture Pill Image"}
           </h3>
-          <p className="text-sm text-slate-600 mb-4">Get the best results with good lighting and tight crop.</p>
+          <p className="text-sm text-slate-600 mb-4">
+            {sideLabel === "front" && "If neither side has writing, either side works. "}
+            Put the pill on a plain surface that contrasts with it (dark for white pills), in bright, even
+            light with no flash glare.
+            Crop tightly around the pill.
+          </p>
 
           {/* Single button: on mobile this opens the OS's native picker, which
               already offers "Take Photo" / "Photo Library" / "Browse" itself --

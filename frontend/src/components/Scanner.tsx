@@ -2,8 +2,9 @@
 "use client";
 
 import { useState } from "react";
-import { identifyPill, submitFeedback, type PillMatch, type RxOrOtc } from "@/lib/api";
-import { addLogEntry, addScheduleEntry, addReferencePill, checkCompliance, getRecentDrugNames, TimeOfDay } from "@/lib/db";
+import { identifyPill, submitFeedback, type PillMatch, type RxOrOtc, type SearchResult } from "@/lib/api";
+import { addLogEntry, addScheduleEntry, addReferencePill, checkCompliance, getRecentDrugNames, getReferencePills, TimeOfDay } from "@/lib/db";
+import { scoreMyPills, judgeMyPillMatch, type MyPillVerdict } from "@/lib/myPills";
 import { fullSafetyCheck } from "@/lib/safety";
 import { speak, vibrate } from "./AudioAlert";
 import { logTelemetry } from "@/lib/telemetry";
@@ -26,6 +27,8 @@ export default function Scanner() {
   const [predictionId, setPredictionId] = useState<string | null>(null);
   const [searchMode, setSearchMode] = useState<"restricted" | "unrestricted" | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [queryEmbeddings, setQueryEmbeddings] = useState<number[][] | null>(null);
+  const [myPillVerdict, setMyPillVerdict] = useState<MyPillVerdict>(null);
 
   const handleFrontCaptured = (canvas: HTMLCanvasElement) => {
     setFrontCanvas(canvas);
@@ -60,7 +63,20 @@ export default function Scanner() {
     setOcrImprintRead(result.ocrImprintRead);
     setPredictionId(result.predictionId);
     setSearchMode(result.searchMode);
+    setQueryEmbeddings(result.queryEmbeddings);
+    setMyPillVerdict(null);
     setStage("results");
+
+    // My Pills: compare against the user's own saved photos, on-device.
+    if (result.queryEmbeddings) {
+      try {
+        const saved = await getReferencePills();
+        const galleryTop = Math.max(-1, ...result.matches.map((m) => m.score));
+        setMyPillVerdict(judgeMyPillMatch(scoreMyPills(result.queryEmbeddings, saved), galleryTop));
+      } catch (err) {
+        console.error("My Pills comparison failed (non-fatal):", err);
+      }
+    }
 
     // Safety check is best-effort and must never roll back a successful
     // identification just because it itself failed (e.g. the static
@@ -101,6 +117,8 @@ export default function Scanner() {
     setSearchMode(null);
     setRxOrOtc(null);
     setScanError(null);
+    setQueryEmbeddings(null);
+    setMyPillVerdict(null);
     setStage("choose-category");
   };
 
@@ -123,18 +141,31 @@ export default function Scanner() {
     resetScanner();
   }
 
-  async function saveAsReference(match: PillMatch) {
+  async function saveToMyPills(info: {
+    drugName: string;
+    ndc: string | null;
+    imprint: string | null;
+    color: string | null;
+    shape: string | null;
+  }) {
     if (!previewUrl) return;
     await addReferencePill({
-      drugName: match.drug_name || match.label,
-      ndc: match.ndc ?? undefined,
-      imprint: match.imprint ?? undefined,
-      color: match.color ?? undefined,
-      shape: match.shape ?? undefined,
+      drugName: info.drugName,
+      ndc: info.ndc ?? undefined,
+      imprint: info.imprint ?? undefined,
+      color: info.color ?? undefined,
+      shape: info.shape ?? undefined,
       photoDataUrl: previewUrl,
+      embeddings: queryEmbeddings ?? undefined,
     });
     vibrate(150);
   }
+
+  const saveAsReference = (match: PillMatch) =>
+    saveToMyPills({ ...match, drugName: match.drug_name || match.label });
+
+  const saveFromSearch = (r: SearchResult) =>
+    saveToMyPills({ ...r, drugName: r.name || r.label });
 
   return (
     <div>
@@ -215,8 +246,10 @@ export default function Scanner() {
           predictionId={predictionId}
           searchMode={searchMode}
           rxOrOtc={rxOrOtc}
+          myPillVerdict={myPillVerdict}
           onDrop={scheduleDrop}
           onSaveReference={saveAsReference}
+          onSaveFromSearch={saveFromSearch}
           onRetake={resetScanner}
         />
       )}
@@ -234,8 +267,10 @@ function ResultsView({
   predictionId,
   searchMode,
   rxOrOtc,
+  myPillVerdict,
   onDrop,
   onSaveReference,
+  onSaveFromSearch,
   onRetake,
 }: {
   matches: PillMatch[];
@@ -247,13 +282,17 @@ function ResultsView({
   predictionId: string | null;
   searchMode: "restricted" | "unrestricted" | null;
   rxOrOtc: RxOrOtc;
+  myPillVerdict: MyPillVerdict;
   onDrop: (match: PillMatch, bucket: TimeOfDay) => void;
-  onSaveReference: (match: PillMatch) => void;
+  onSaveReference: (match: PillMatch) => Promise<void>;
+  onSaveFromSearch: (result: SearchResult) => Promise<void>;
   onRetake: () => void;
 }) {
   const [feedbackState, setFeedbackState] = useState<"idle" | "sending" | "sent" | "error">("idle");
   const [savedLabels, setSavedLabels] = useState<Set<string>>(new Set());
   const [showAppearanceSearch, setShowAppearanceSearch] = useState(false);
+  const [showSaveSearch, setShowSaveSearch] = useState(false);
+  const [savedFromSearch, setSavedFromSearch] = useState<string | null>(null);
 
   function handleDragStart(e: React.DragEvent, match: PillMatch) {
     e.dataTransfer.setData("text/plain", match.label);
@@ -282,6 +321,46 @@ function ResultsView({
 
   return (
     <div className="space-y-6 max-w-3xl mx-auto pb-12">
+      {myPillVerdict && (
+        <div
+          className={`rounded-2xl p-4 shadow-sm border-2 ${
+            myPillVerdict.kind === "strong" ? "bg-emerald-50 border-emerald-400" : "bg-amber-50 border-amber-300"
+          }`}
+        >
+          <p
+            className={`text-xs font-bold uppercase tracking-wider ${
+              myPillVerdict.kind === "strong" ? "text-emerald-700" : "text-amber-700"
+            }`}
+          >
+            {myPillVerdict.kind === "strong" ? "✓ Matches a pill in My Pills" : "Could be a pill in My Pills"}
+          </p>
+          <div className="flex items-center gap-3 mt-2">
+            <img
+              src={myPillVerdict.match.pill.photoDataUrl}
+              alt={myPillVerdict.match.pill.drugName}
+              className="w-16 h-16 rounded-xl border border-slate-200 object-contain bg-white p-1 shrink-0"
+            />
+            <div className="min-w-0">
+              <p className="font-bold text-slate-900 truncate">{myPillVerdict.match.pill.drugName}</p>
+              <p className="text-xs text-slate-600">
+                {(myPillVerdict.match.score * 100).toFixed(0)}% match to the photo you saved on{" "}
+                {new Date(myPillVerdict.match.pill.savedAt).toLocaleDateString()}
+              </p>
+            </div>
+          </div>
+          {myPillVerdict.runnerUp && (
+            <p className="text-xs text-amber-800 mt-2">
+              Also very close: <strong>{myPillVerdict.runnerUp.pill.drugName}</strong>. These two look alike, so
+              compare the photos carefully.
+            </p>
+          )}
+          {myPillVerdict.kind === "possible" && (
+            <p className="text-xs text-amber-800 mt-2">
+              Not a confident match. Compare it with your saved photo before relying on it.
+            </p>
+          )}
+        </div>
+      )}
       {lowConfidence && (
         <div className="bg-red-50 border-l-4 border-red-500 rounded-r-xl p-4 shadow-sm">
           <p className="text-sm text-red-900 font-semibold">
@@ -456,16 +535,25 @@ function ResultsView({
                   🔊
                 </button>
                 <button
-                  onClick={(e) => {
+                  onClick={async (e) => {
                     e.stopPropagation();
-                    onSaveReference(m);
                     setSavedLabels((prev) => new Set(prev).add(m.label));
+                    try {
+                      await onSaveReference(m);
+                    } catch (err) {
+                      console.error("Saving to My Pills failed:", err);
+                      setSavedLabels((prev) => {
+                        const next = new Set(prev);
+                        next.delete(m.label);
+                        return next;
+                      });
+                    }
                   }}
                   disabled={savedLabels.has(m.label)}
                   className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition disabled:opacity-50"
-                  title="Save as my reference pill (for comparing against future refills)"
+                  title="Save this photo to My Pills -- future scans of this pill are matched against your own photo"
                 >
-                  {savedLabels.has(m.label) ? "📌 Saved" : "📌 Save"}
+                  {savedLabels.has(m.label) ? "📌 Saved" : "📌 Save to My Pills"}
                 </button>
               </div>
             </div>
@@ -486,6 +574,42 @@ function ResultsView({
         {showAppearanceSearch && (
           <div className="mt-4">
             <PillSearchPanel compact allowNameSearch={false} />
+          </div>
+        )}
+      </div>
+
+      {/* Save to My Pills even when the right pill isn't among the matches:
+          look it up by name and attach this photo to it. That's exactly the
+          case My Pills fixes -- next time, this photo is the reference. */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-4">
+        <button
+          onClick={() => setShowSaveSearch((v) => !v)}
+          className="w-full text-center text-sm font-semibold text-indigo-600"
+        >
+          {showSaveSearch ? "▲ Hide" : "📌 Know what this pill is? Save it to My Pills"}
+        </button>
+        {showSaveSearch && (
+          <div className="mt-4 space-y-3">
+            <p className="text-xs text-slate-500">
+              Search for your medication and tap &quot;Save as my pill&quot;. This photo becomes its reference, so the
+              next scan of this pill is matched against your own photo.
+            </p>
+            {savedFromSearch && (
+              <p className="text-sm text-emerald-700 font-medium">✓ Saved {savedFromSearch} to My Pills.</p>
+            )}
+            <PillSearchPanel
+              compact
+              defaultMode="name"
+              selectLabel="📌 Save as my pill"
+              onSelect={async (r) => {
+                try {
+                  await onSaveFromSearch(r);
+                  setSavedFromSearch(r.name || r.label);
+                } catch (err) {
+                  console.error("Saving to My Pills failed:", err);
+                }
+              }}
+            />
           </div>
         )}
       </div>

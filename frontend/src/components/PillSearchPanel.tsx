@@ -28,6 +28,8 @@ export default function PillSearchPanel({
   defaultMode = "name",
   allowNameSearch = true,
   compact = false,
+  onSelect,
+  selectLabel = "Select",
 }: {
   defaultMode?: Mode;
   /** Scanner's "don't see your pill?" fallback only offers appearance
@@ -36,6 +38,10 @@ export default function PillSearchPanel({
       scanner to begin with). */
   allowNameSearch?: boolean;
   compact?: boolean;
+  /** When given, each result gets a button that hands it back to the
+      caller (e.g. "Save as my pill" in the scanner). */
+  onSelect?: (result: SearchResult) => void;
+  selectLabel?: string;
 }) {
   const [mode, setMode] = useState<Mode>(allowNameSearch ? defaultMode : "appearance");
   const [nameQuery, setNameQuery] = useState("");
@@ -291,6 +297,15 @@ export default function PillSearchPanel({
                   <p className="text-[11px] text-slate-500 truncate">
                     {[r.imprint && `Imprint: ${r.imprint}`, r.color, r.shape].filter(Boolean).join(" · ")}
                   </p>
+                )}
+                {onSelect && (
+                  <button
+                    type="button"
+                    onClick={() => onSelect(r)}
+                    className="mt-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs transition"
+                  >
+                    {selectLabel}
+                  </button>
                 )}
               </div>
             </div>

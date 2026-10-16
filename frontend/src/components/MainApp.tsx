@@ -3,7 +3,8 @@
 import React, { useState, useEffect } from "react";
 import Scanner from "@/components/Scanner";
 import PillSearchPanel from "@/components/PillSearchPanel";
-import { getSchedule, ScheduleEntry, getReferencePills, deleteReferencePill, ReferencePill } from "@/lib/db";
+import { getSchedule, ScheduleEntry, getReferencePills, deleteReferencePill, updateReferencePill, ReferencePill } from "@/lib/db";
+import { embedPhoto } from "@/lib/api";
 import { checkBeersCriteria, checkInteractions, BeersFlag, InteractionFlag } from "@/lib/safety";
 import { buildQrPassportDataUrl } from "@/lib/pdf";
 
@@ -32,6 +33,32 @@ export default function MainApp({ onResetSession }: MainAppProps) {
       getReferencePills().then(setReferencePills);
     }
   }, [activeTab]);
+
+  // Pills saved before scans returned embeddings can't be matched yet --
+  // fetch their embeddings once (best-effort; retried next time the tab
+  // opens if the backend is unreachable).
+  useEffect(() => {
+    if (activeTab !== "passport") return;
+    const missing = referencePills.filter((r) => !r.embeddings || r.embeddings.length === 0);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      let changed = false;
+      for (const pill of missing) {
+        try {
+          const embeddings = await embedPhoto(pill.photoDataUrl);
+          if (embeddings.length === 0) continue;
+          await updateReferencePill({ ...pill, embeddings });
+          changed = true;
+        } catch (err) {
+          console.error("Could not prepare saved pill for matching:", err);
+          break;
+        }
+      }
+      if (changed && !cancelled) getReferencePills().then(setReferencePills);
+    })();
+    return () => { cancelled = true; };
+  }, [activeTab, referencePills]);
 
   // Real Beers Criteria + drug-drug interaction check across everything
   // currently scheduled (not just a single newly-scanned drug).
@@ -212,6 +239,66 @@ export default function MainApp({ onResetSession }: MainAppProps) {
         {activeTab === "passport" && (
           <div className="flex flex-col space-y-6">
             <div>
+              <h2 className="text-xl font-bold text-slate-900">My Pills</h2>
+              <p className="text-sm text-slate-500 mt-1">
+                Save one photo of each medication you take. Every future scan is checked against your own photos
+                first. Your pill, from your pharmacy, is a much closer match than any database picture.
+              </p>
+              <p className="text-xs text-slate-500 mt-2">
+                To add a pill: scan it in the Scan tab, then tap &quot;📌 Save to My Pills&quot; on the right match, or
+                use &quot;Know what this pill is?&quot; if it isn&apos;t listed. Saved photos are stored only on this device.
+              </p>
+              <p className="text-xs text-slate-500 mt-2">
+                A refill can look different: pharmacies switch between generic manufacturers. If a new refill
+                doesn&apos;t match your saved photo, that isn&apos;t necessarily a mistake, but it&apos;s worth asking
+                your pharmacist.
+              </p>
+            </div>
+
+            {referencePills.length === 0 ? (
+              <div className="p-8 text-center border-2 border-dashed border-slate-200 rounded-2xl bg-white shadow-sm text-slate-400 text-sm">
+                No pills saved yet.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {referencePills.map((r) => (
+                  <div key={r.id} className="p-4 bg-white border border-slate-200 rounded-xl shadow-sm flex gap-3">
+                    <img
+                      src={r.photoDataUrl}
+                      alt={r.drugName}
+                      className="w-20 h-20 rounded-lg border border-slate-200 object-contain bg-slate-50 p-1 shrink-0"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="font-bold text-slate-900 text-sm truncate">{r.drugName}</p>
+                      <p className="text-[11px] text-slate-400 font-mono">NDC: {r.ndc || "N/A"}</p>
+                      {(r.imprint || r.color || r.shape) && (
+                        <p className="text-[11px] text-slate-500">
+                          {[r.imprint && `Imprint: ${r.imprint}`, r.color, r.shape].filter(Boolean).join(" · ")}
+                        </p>
+                      )}
+                      <p className="text-[10px] text-slate-400 mt-1">
+                        Saved {new Date(r.savedAt).toLocaleDateString()}
+                        {r.embeddings && r.embeddings.length > 0 ? (
+                          <span className="text-emerald-600"> · used for matching</span>
+                        ) : (
+                          <span className="text-amber-600"> · preparing for matching (needs the server)</span>
+                        )}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        deleteReferencePill(r.id).then(() => getReferencePills().then(setReferencePills));
+                      }}
+                      className="self-start text-slate-400 hover:text-red-600 text-xs px-2 py-1"
+                      title="Remove"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="pt-4 border-t border-slate-200">
               <h2 className="text-xl font-bold text-slate-900">Medication Passport</h2>
               <p className="text-sm text-slate-500">Portable emergency summary profile.</p>
             </div>
@@ -235,55 +322,6 @@ export default function MainApp({ onResetSession }: MainAppProps) {
               </p>
             </div>
 
-            <div>
-              <h3 className="font-semibold text-slate-900 mb-1">My Reference Pills</h3>
-              <p className="text-xs text-slate-500">
-                Generic medications are often made by several different manufacturers, and your pharmacy can switch
-                which one they stock between refills — so a pill that's a different color or shape than last time
-                isn't necessarily a mistake. Saving a photo here when you first get a medication gives you something
-                concrete to compare a refill against, and to show your pharmacist if you want to ask "why does this
-                look different?" (Tap "📌 Save as my reference" on a scan result in the Scan tab to add one.)
-              </p>
-            </div>
-
-            {referencePills.length === 0 ? (
-              <div className="p-8 text-center border-2 border-dashed border-slate-200 rounded-2xl bg-white shadow-sm text-slate-400 text-sm">
-                No reference pills saved yet.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {referencePills.map((r) => (
-                  <div key={r.id} className="p-4 bg-white border border-slate-200 rounded-xl shadow-sm flex gap-3">
-                    <img
-                      src={r.photoDataUrl}
-                      alt={r.drugName}
-                      className="w-20 h-20 rounded-lg border border-slate-200 object-contain bg-slate-50 p-1 shrink-0"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <p className="font-bold text-slate-900 text-sm truncate">{r.drugName}</p>
-                      <p className="text-[11px] text-slate-400 font-mono">NDC: {r.ndc || "N/A"}</p>
-                      {(r.imprint || r.color || r.shape) && (
-                        <p className="text-[11px] text-slate-500">
-                          {[r.imprint && `Imprint: ${r.imprint}`, r.color, r.shape].filter(Boolean).join(" · ")}
-                        </p>
-                      )}
-                      <p className="text-[10px] text-slate-400 mt-1">
-                        Saved {new Date(r.savedAt).toLocaleDateString()}
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => {
-                        deleteReferencePill(r.id).then(() => getReferencePills().then(setReferencePills));
-                      }}
-                      className="self-start text-slate-400 hover:text-red-600 text-xs px-2 py-1"
-                      title="Remove"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         )}
 
@@ -367,8 +405,8 @@ export default function MainApp({ onResetSession }: MainAppProps) {
           onClick={() => setActiveTab("passport")}
           className={`flex flex-col items-center flex-1 py-1.5 transition ${activeTab === "passport" ? "text-blue-600 font-semibold" : "text-slate-500 hover:text-slate-800"}`}
         >
-          <span className="text-xl">🪪</span>
-          <span className="text-[11px] mt-0.5">Passport</span>
+          <span className="text-xl">📌</span>
+          <span className="text-[11px] mt-0.5">My Pills</span>
         </button>
 
         <button
