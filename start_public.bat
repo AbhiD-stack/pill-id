@@ -15,6 +15,13 @@ if errorlevel 1 (
 
 echo [1/3] Building the web app (about a minute)...
 pushd frontend
+call npm install --no-audit --no-fund
+if errorlevel 1 (
+  echo Installing the web app's packages failed -- see the messages above.
+  popd
+  pause
+  exit /b 1
+)
 call npm run build:static
 if errorlevel 1 (
   echo The web app build failed -- see the messages above.
