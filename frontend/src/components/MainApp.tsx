@@ -255,9 +255,17 @@ export default function MainApp({ onResetSession }: MainAppProps) {
               </p>
             </div>
 
+            <button
+              onClick={() => setActiveTab("scan")}
+              className="w-full px-4 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition shadow-sm"
+            >
+              + Add a pill (scan it)
+            </button>
+
             {referencePills.length === 0 ? (
               <div className="p-8 text-center border-2 border-dashed border-slate-200 rounded-2xl bg-white shadow-sm text-slate-400 text-sm">
-                No pills saved yet.
+                No pills saved yet. Setting this up with a caregiver, pharmacist or doctor is the best way to confirm
+                each pill is saved under the right name.
               </div>
             ) : (
               <div className="space-y-3">

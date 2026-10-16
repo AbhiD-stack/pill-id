@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { searchByName, searchByAppearance, type SearchResult } from "@/lib/api";
+import PillThumb from "./PillThumb";
 import { SHAPE_OPTIONS, COLOR_OPTIONS, SCORE_MARK_OPTIONS, SCORE_MARK_LABELS, shapeIconPath, scoreMarkLines } from "@/lib/pillAppearance";
 
 type Mode = "name" | "appearance";
@@ -279,17 +280,11 @@ export default function PillSearchPanel({
         <div className={`grid ${compact ? "grid-cols-1" : "grid-cols-1 sm:grid-cols-2"} gap-3`}>
           {results.map((r) => (
             <div key={r.label} className="flex gap-3 p-3 bg-white border border-slate-200 rounded-xl shadow-sm">
-              {r.reference_image_url ? (
-                <img
-                  src={r.reference_image_url}
-                  alt={r.name || r.label}
-                  className="w-16 h-16 rounded-lg border border-slate-200 object-contain bg-slate-50 p-1 shrink-0"
-                />
-              ) : (
-                <div className="w-16 h-16 rounded-lg border border-slate-200 bg-slate-50 shrink-0 flex items-center justify-center text-slate-300 text-xs">
-                  No image
-                </div>
-              )}
+              <PillThumb
+                url={r.reference_image_url}
+                kind={r.reference_image_kind}
+                alt={r.name || r.label}
+              />
               <div className="min-w-0 flex-1">
                 <p className="font-bold text-slate-900 text-sm truncate">{r.name || r.label}</p>
                 <p className="text-[11px] text-slate-400 font-mono">NDC: {r.ndc || "N/A"}</p>

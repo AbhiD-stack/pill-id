@@ -1,16 +1,18 @@
-"""Run this LOCALLY (Windows) to build backend/app/data/thumbnails/ -- one
-representative image per label, chosen to look as much like an actual
-photo of the pill as possible.
+"""Run this LOCALLY (Windows) to build backend/app/data/thumbnails/:
 
-Sources (in priority order):
-  1. C3PI / RxImage (optional --c3pi folder): NLM's studio photos of the
-     pill itself on a plain background -- the ideal thumbnail. Covers
-     ~4.1k labels.
-  2. DailyMed (required): each label has up to ~20 candidate images, a
-     mix of the manufacturer's actual product photo and package/carton/
-     label artwork (and occasionally a chemical-structure figure). Every
-     candidate is scored and the most pill-photo-like one wins, instead
-     of blindly taking the first (which was frequently the box).
+  thumbnails/pill/{label}.jpg     real pill photos (C3PI, optional --c3pi
+                                  folder): NLM's studio photos of the pill
+                                  itself. Covers ~4.1k labels.
+  thumbnails/package/{label}.jpg  the best DailyMed image per label
+                                  (required --dailymed folder). DailyMed
+                                  has almost no pill photos -- these are
+                                  package/label art -- so every candidate
+                                  is scored and the most pill-like one
+                                  wins (and line art is rejected).
+
+The backend shows a pill/ photo when one exists; otherwise the app draws
+the pill from its shape/color/imprint and keeps the package/ image one tap
+away.
 
 Usage (from backend/, with .venv activated):
     python scripts/collect_thumbnails.py --dailymed "C:\\...\\dailymed_images"
@@ -42,6 +44,8 @@ HERE = Path(__file__).resolve().parent
 DAILYMED_MAPPING = HERE / "dailymed_thumbnail_filenames.json"
 C3PI_MAPPING = HERE / "c3pi_thumbnail_filenames.json"
 OUT_DIR = HERE.parent / "app" / "data" / "thumbnails"
+PILL_DIR = OUT_DIR / "pill"
+PACKAGE_DIR = OUT_DIR / "package"
 PREVIEW_PATH = HERE.parent / "thumbnail_preview.html"
 
 _PACKAGING_NAME = re.compile(
@@ -180,19 +184,16 @@ def main() -> int:
     dm_map: dict[str, list[str]] = json.loads(DAILYMED_MAPPING.read_text())
     c3_map: dict[str, str] = json.loads(C3PI_MAPPING.read_text()) if args.c3pi else {}
 
-    # C3PI first: a real studio photo of the pill beats any DailyMed candidate.
-    chosen: dict[str, Path] = {}
+    pill_photos: dict[str, Path] = {}
     if args.c3pi:
         for label, fname in c3_map.items():
             p = args.c3pi / fname
             if p.exists():
-                chosen[label] = p
-        print(f"C3PI: {len(chosen)} labels have a real studio pill photo.")
+                pill_photos[label] = p
+        print(f"C3PI: {len(pill_photos)} labels have a real studio pill photo.")
 
     jobs = []
     for label, names in dm_map.items():
-        if label in chosen:
-            continue
         existing = [str(args.dailymed / n) for n in names if (args.dailymed / n).exists()]
         if existing:
             jobs.append((label, existing))
@@ -230,23 +231,25 @@ def main() -> int:
         print(f"\nWrote {PREVIEW_PATH} -- open it in a browser. Green border = picked.")
         return 0
 
-    dm_picked = 0
+    package: dict[str, Path] = {}
     rejected_all = 0
     for label, best, _ in results:
         if best:
-            chosen[label] = Path(best)
-            dm_picked += 1
+            package[label] = Path(best)
         else:
             rejected_all += 1
 
     if OUT_DIR.exists():
         shutil.rmtree(OUT_DIR)  # rebuild from scratch so stale picks don't linger
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    for label, src in chosen.items():
-        shutil.copyfile(src, OUT_DIR / f"{label}.jpg")
+    PILL_DIR.mkdir(parents=True, exist_ok=True)
+    PACKAGE_DIR.mkdir(parents=True, exist_ok=True)
+    for label, src in pill_photos.items():
+        shutil.copyfile(src, PILL_DIR / f"{label}.jpg")
+    for label, src in package.items():
+        shutil.copyfile(src, PACKAGE_DIR / f"{label}.jpg")
 
-    print(f"\nWrote {len(chosen)} thumbnails to {OUT_DIR}")
-    print(f"  from DailyMed (best-scoring candidate): {dm_picked}")
+    print(f"\nWrote {len(pill_photos)} real pill photos to {PILL_DIR}")
+    print(f"Wrote {len(package)} package images to {PACKAGE_DIR}")
     print(f"  labels where every DailyMed candidate was rejected (line art/blank): {rejected_all}")
     print("\nDone -- local only, nothing to commit. Restart the backend.")
     return 0

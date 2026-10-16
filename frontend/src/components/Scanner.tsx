@@ -10,6 +10,7 @@ import { speak, vibrate } from "./AudioAlert";
 import { logTelemetry } from "@/lib/telemetry";
 import ImageCapture from "./ImageCapture";
 import PillSearchPanel from "./PillSearchPanel";
+import PillThumb from "./PillThumb";
 
 type Stage = "choose-category" | "capture-front" | "capture-back" | "identifying" | "results";
 
@@ -413,15 +414,14 @@ function ResultsView({
           </div>
           <div className="text-center bg-indigo-50/55 p-3 rounded-xl border border-indigo-200">
             <p className="text-xs font-bold text-indigo-700 mb-2">Top Match Reference</p>
-            {matches[0].reference_image_url ? (
-              <img
-                src={matches[0].reference_image_url}
+            <div className="flex justify-center">
+              <PillThumb
+                url={matches[0].reference_image_url}
+                kind={matches[0].reference_image_kind}
                 alt={matches[0].drug_name || matches[0].label}
-                className="w-32 h-32 object-contain mx-auto rounded-lg border border-indigo-200 bg-white shadow-inner p-1"
+                className="w-32 h-32"
               />
-            ) : (
-              <div className="w-32 h-32 bg-indigo-100 rounded-lg mx-auto flex items-center justify-center text-indigo-300">No Image</div>
-            )}
+            </div>
           </div>
         </div>
       </div>
@@ -503,13 +503,10 @@ function ResultsView({
                 </span>
               )}
               <div className="flex items-center gap-3">
-                <img
-                  src={m.reference_image_url || ""}
+                <PillThumb
+                  url={m.reference_image_url}
+                  kind={m.reference_image_kind}
                   alt={m.drug_name || m.label}
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 24 24' fill='none' stroke='%23cbd5e1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='18' height='18' x='3' y='3' rx='2' ry='2'/%3E%3Ccircle cx='9' cy='9' r='2'/%3E%3Cpath d='m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21'/%3E%3C/svg%3E";
-                  }}
-                  className="w-16 h-16 rounded-xl border border-slate-200 object-contain bg-slate-50 p-1 shrink-0"
                 />
                 <div className="min-w-0 flex-1">
                   <p className="font-bold text-slate-900 text-sm truncate">{m.drug_name || m.label}</p>

@@ -126,24 +126,37 @@ def health():
     }
 
 
-def _resolve_thumbnail_url(label: str, ref_path: str | None, ref_store: ReferenceImageStore | None) -> str | None:
-    """Real pill photos win over package art. Order:
+# thumbnails_dir layout (scripts/collect_thumbnails.py): pill/ holds real
+# C3PI pill photos, package/ the best DailyMed image (almost always
+# package/label art). Files directly in thumbnails_dir are from an older
+# run of the script, which was DailyMed-only, so they count as package art.
+_THUMB_SUBDIRS = {"pill": "pill", "package": "package", "legacy": ""}
+
+
+def _thumbnail_file(label: str, kind: str):
+    return get_settings().thumbnails_dir / _THUMB_SUBDIRS[kind] / f"{label}.jpg"
+
+
+def _resolve_thumbnail(label: str, ref_path: str | None, ref_store: ReferenceImageStore | None
+                       ) -> tuple[str | None, str | None]:
+    """(url, kind) -- kind is "pill_photo" (a real photo of the pill) or
+    "package" (package/label art, which the app replaces with a drawn pill
+    illustration when it has the pill's shape/color). Real photos win:
       1. the exact winning reference image, if it's a real ePillID photo;
       2. any real ePillID photo for the label (epillid_by_label);
-      3. the label-keyed thumbnails/ folder (scripts/collect_thumbnails.py --
-         C3PI studio photos when available, otherwise the most pill-like
-         DailyMed image, which is usually package/label art)."""
-    settings = get_settings()
+      3. a C3PI photo from thumbnails/pill/;
+      4. DailyMed art from thumbnails/package/ (or the legacy flat folder)."""
     if ref_store is not None and ref_path is not None:
         zip_path = map_to_zip_path(ref_path)
         if zip_path.startswith("ePillID_data/") and ref_store.has(zip_path):
-            return f"/api/reference-image?path={quote(zip_path)}"
+            return f"/api/reference-image?path={quote(zip_path)}", "pill_photo"
     zip_path = state.get("epillid_by_label", {}).get(label)
     if zip_path is not None:
-        return f"/api/reference-image?path={quote(zip_path)}"
-    if (settings.thumbnails_dir / f"{label}.jpg").exists():
-        return f"/api/thumbnail?label={quote(label)}"
-    return None
+        return f"/api/reference-image?path={quote(zip_path)}", "pill_photo"
+    for kind, result_kind in (("pill", "pill_photo"), ("package", "package"), ("legacy", "package")):
+        if _thumbnail_file(label, kind).exists():
+            return f"/api/thumbnail?label={quote(label)}&kind={kind}", result_kind
+    return None, None
 
 
 async def _read_image(file: UploadFile) -> Image.Image:
@@ -217,7 +230,7 @@ async def predict(
 
     results = []
     for p, info, match, fused_score in fused:
-        ref_url = _resolve_thumbnail_url(p.label, p.ref_path, ref_store)
+        ref_url, ref_kind = _resolve_thumbnail(p.label, p.ref_path, ref_store)
         results.append(
             {
                 "label": p.label,
@@ -242,6 +255,7 @@ async def predict(
                 "imprint_match_score": round(match.score, 4),
                 "fused_score": round(fused_score, 4),
                 "reference_image_url": ref_url,
+                "reference_image_kind": ref_kind,
             }
         )
 
@@ -352,13 +366,15 @@ _LABEL_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 @app.get("/api/thumbnail")
-def thumbnail(label: str = Query(..., description="Pill label (NDC9-style)")):
-    """Serves from thumbnails_dir/{label}.jpg -- see _resolve_thumbnail_url
-    and scripts/collect_thumbnails.py."""
-    if not _LABEL_RE.match(label):
+def thumbnail(
+    label: str = Query(..., description="Pill label (NDC9-style)"),
+    kind: str = Query("legacy", description='"pill", "package", or "legacy" (flat folder)'),
+):
+    """Serves thumbnails_dir/[pill|package/]{label}.jpg -- see
+    _resolve_thumbnail and scripts/collect_thumbnails.py."""
+    if not _LABEL_RE.match(label) or kind not in _THUMB_SUBDIRS:
         raise HTTPException(status_code=400, detail="Invalid label.")
-    settings = get_settings()
-    path = settings.thumbnails_dir / f"{label}.jpg"
+    path = _thumbnail_file(label, kind)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Thumbnail not found.")
     return Response(
@@ -371,7 +387,7 @@ def _build_search_result(label: str, info: dict) -> dict:
     clf: DinoV2PillClassifier = state["classifier"]
     ref_store: ReferenceImageStore | None = state["ref_store"]
     ref_path = clf.ref_path_for_label(label)
-    ref_url = _resolve_thumbnail_url(label, ref_path, ref_store)
+    ref_url, ref_kind = _resolve_thumbnail(label, ref_path, ref_store)
     return {
         "label": label,
         "ndc": label,
@@ -381,6 +397,7 @@ def _build_search_result(label: str, info: dict) -> dict:
         "shape": info.get("shape"),
         "score_marks": info.get("score_marks"),
         "reference_image_url": ref_url,
+        "reference_image_kind": ref_kind,
     }
 
 

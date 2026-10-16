@@ -12,7 +12,12 @@ export type PredictionResult = {
   imprint_match_score?: number;
   fused_score?: number;
   reference_image_url: string | null;
+  // "pill_photo" = a real photo of the pill; "package" = package/label art
+  // (the app draws the pill instead when it knows its shape/color).
+  reference_image_kind?: ReferenceImageKind;
 };
+
+export type ReferenceImageKind = "pill_photo" | "package" | null;
 
 export type PredictResponse = {
   prediction_id: string;
@@ -43,6 +48,7 @@ export type SearchResult = {
   shape: string | null;
   score_marks: string | null;
   reference_image_url: string | null;
+  reference_image_kind?: ReferenceImageKind;
   match_count?: number;
 };
 
@@ -150,8 +156,10 @@ export type PillMatch = {
   imprint: string | null;
   color: string | null;
   shape: string | null;
+  score_marks: string | null;
   score: number;
   reference_image_url: string | null;
+  reference_image_kind: ReferenceImageKind;
 };
 
 export type IdentifyResult = {
@@ -199,7 +207,9 @@ export async function identifyPill(
       imprint: p.imprint,
       color: p.color,
       shape: p.shape,
+      score_marks: p.score_marks,
       score: p.score,
+      reference_image_kind: p.reference_image_kind ?? null,
       reference_image_url: p.reference_image_url
         ? await fetchSecureImageBlob(referenceImageSrc(p.reference_image_url))
         : null,
