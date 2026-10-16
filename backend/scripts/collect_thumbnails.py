@@ -46,6 +46,11 @@ C3PI_MAPPING = HERE / "c3pi_thumbnail_filenames.json"
 OUT_DIR = HERE.parent / "app" / "data" / "thumbnails"
 PILL_DIR = OUT_DIR / "pill"
 PACKAGE_DIR = OUT_DIR / "package"
+# Real pill photos found among the DailyMed images by the pill model itself
+# (label -> filename in --dailymed; built from the gallery embeddings: an
+# image whose nearest gallery neighbors are mostly real pill photos).
+DM_PHOTOS_MAPPING = HERE / "dailymed_pill_photos.json"
+DM_PILL_DIR = OUT_DIR / "dm_pill"
 PREVIEW_PATH = HERE.parent / "thumbnail_preview.html"
 
 _PACKAGING_NAME = re.compile(
@@ -240,16 +245,33 @@ def main() -> int:
         else:
             rejected_all += 1
 
-    if OUT_DIR.exists():
-        shutil.rmtree(OUT_DIR)  # rebuild from scratch so stale picks don't linger
+    # Rebuild only the folders this script owns, so stale picks don't
+    # linger -- other scripts' folders (label_pill/) are left alone.
+    for d in (PILL_DIR, PACKAGE_DIR, DM_PILL_DIR):
+        if d.exists():
+            shutil.rmtree(d)
+    for old in OUT_DIR.glob("*.jpg") if OUT_DIR.exists() else []:
+        old.unlink()  # flat files from an older version of this script
     PILL_DIR.mkdir(parents=True, exist_ok=True)
     PACKAGE_DIR.mkdir(parents=True, exist_ok=True)
+    DM_PILL_DIR.mkdir(parents=True, exist_ok=True)
+    dm_photos = json.loads(DM_PHOTOS_MAPPING.read_text()) if DM_PHOTOS_MAPPING.exists() else {}
+    dm_written = 0
+    for label, fname in dm_photos.items():
+        src = args.dailymed / fname
+        if src.exists():
+            try:
+                Image.open(src).convert("RGB").save(DM_PILL_DIR / f"{label}.jpg", "JPEG", quality=90)
+                dm_written += 1
+            except Exception:
+                pass
     for label, src in pill_photos.items():
         shutil.copyfile(src, PILL_DIR / f"{label}.jpg")
     for label, src in package.items():
         shutil.copyfile(src, PACKAGE_DIR / f"{label}.jpg")
 
     print(f"\nWrote {len(pill_photos)} real pill photos to {PILL_DIR}")
+    print(f"Wrote {dm_written} real pill photos found in the DailyMed images to {DM_PILL_DIR}")
     print(f"Wrote {len(package)} package images to {PACKAGE_DIR}")
     print(f"  labels where every DailyMed candidate was rejected (line art/blank): {rejected_all}")
     print("\nDone -- local only, nothing to commit. Restart the backend.")

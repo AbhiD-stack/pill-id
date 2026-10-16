@@ -163,10 +163,18 @@ def _build_thumbnail_maps(settings) -> None:
             offer(f.stem, -1, "thumb", f.stem)  # C3PI studio photo: the clearest
     for label, zp in state.get("epillid_by_label", {}).items():
         offer(label, _epillid_photo_rank(zp), "zip", zp)
-    label_dir = settings.thumbnails_dir / "label_pill"
-    if label_dir.is_dir():
-        for f in label_dir.glob("*.jpg"):
-            offer(f.stem, 3, "label_thumb", f.stem)  # manufacturer's photo from the drug label
+    # Manufacturers' photos of the pill from drug labels: fetched by
+    # fetch_label_pill_photos.py, or found among the DailyMed images by
+    # collect_thumbnails.py.
+    for kind in ("label_pill", "dm_pill"):
+        d = settings.thumbnails_dir / kind
+        if d.is_dir():
+            for f in d.glob("*.jpg"):
+                offer(f.stem, 3, kind, f.stem)
+    # Photos users confirmed ("Yes, correct" on a scan): a real photo of
+    # exactly that pill, used when nothing better exists.
+    for label, record_id in _confirmed_photos(settings):
+        offer(label, 4, "confirmed", record_id)
     state["photo_by_group"] = {g: (how, value) for g, (_, how, value) in best.items()}
 
     package: dict[str, tuple[str, str]] = {}
@@ -179,10 +187,29 @@ def _build_thumbnail_maps(settings) -> None:
                     package.setdefault(g, (kind, f.stem))
     state["package_by_group"] = package
     n = len(groups.members)
-    from_labels = sum(1 for _, how, _v in best.values() if how == "label_thumb")
+    from_labels = sum(1 for _, how, _v in best.values() if how in ("label_pill", "dm_pill"))
     print(f"[startup] Thumbnails: real pill photo for {len(best)}/{n} pills ({len(best) / max(1, n):.0%}; "
           f"{from_labels} from drug labels), "
           f"package image for {len(set(package) - set(best))} more.")
+
+
+_RECORD_RE = re.compile(r"^[0-9]+_[0-9a-f]{32}$")
+
+
+def _confirmed_photos(settings) -> list[tuple[str, str]]:
+    """(label, feedback record id) for every scan a user confirmed correct."""
+    out = []
+    if not settings.feedback_dir.is_dir():
+        return out
+    for meta in sorted(settings.feedback_dir.glob("*.json")):
+        try:
+            rec = json.loads(meta.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        label = rec.get("reported_label")
+        if rec.get("correct") and label and _RECORD_RE.match(meta.stem) and meta.with_suffix(".jpg").exists():
+            out.append((label, meta.stem))
+    return out
 
 
 def _check_artifacts(clf: DinoV2PillClassifier, drug_names: DrugNameLookup, settings) -> None:
@@ -239,7 +266,7 @@ def health():
 # C3PI pill photos, package/ the best DailyMed image (almost always
 # package/label art). Files directly in thumbnails_dir are from an older
 # run of the script, which was DailyMed-only, so they count as package art.
-_THUMB_SUBDIRS = {"pill": "pill", "label_pill": "label_pill", "package": "package", "legacy": ""}
+_THUMB_SUBDIRS = {"pill": "pill", "label_pill": "label_pill", "dm_pill": "dm_pill", "package": "package", "legacy": ""}
 
 
 def _epillid_photo_rank(zip_path: str) -> int:
@@ -275,8 +302,10 @@ def _resolve_thumbnail(label: str) -> tuple[str | None, str | None]:
         how, value = photo
         if how == "zip":
             return f"/api/reference-image?path={quote(value)}", "pill_photo"
-        if how == "label_thumb":
-            return f"/api/thumbnail?label={quote(value)}&kind=label_pill", "pill_photo"
+        if how in ("label_pill", "dm_pill"):
+            return f"/api/thumbnail?label={quote(value)}&kind={how}", "pill_photo"
+        if how == "confirmed":
+            return f"/api/confirmed-photo?id={quote(value)}", "pill_photo"
         return f"/api/thumbnail?label={quote(value)}&kind=pill", "pill_photo"
     for kind in ("package", "legacy"):
         if _thumbnail_file(label, kind).exists():
@@ -544,7 +573,26 @@ async def feedback(
         "notes": notes,
         "timestamp": time.time(),
     }, indent=2))
+    # A confirmed photo becomes the pill's thumbnail right away if the pill
+    # has no real photo yet.
+    names: DrugNameLookup | None = state.get("drug_names")
+    if correct and reported_label and names is not None and names.groups is not None:
+        g = names.groups.group_of.get(reported_label)
+        if g is not None and g not in state.setdefault("photo_by_group", {}):
+            state["photo_by_group"][g] = ("confirmed", record_id)
     return {"status": "recorded"}
+
+
+@app.get("/api/confirmed-photo")
+def confirmed_photo(id: str = Query(...)):
+    """A user-confirmed scan photo used as a pill's thumbnail."""
+    if not _RECORD_RE.match(id):
+        raise HTTPException(status_code=400, detail="Invalid id.")
+    path = get_settings().feedback_dir / f"{id}.jpg"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Photo not found.")
+    return Response(content=path.read_bytes(), media_type="image/jpeg",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 @app.get("/api/reference-image")
 def reference_image(path: str = Query(..., description="Zip member path under ePillID_data/")):
