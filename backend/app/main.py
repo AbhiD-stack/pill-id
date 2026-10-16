@@ -163,6 +163,10 @@ def _build_thumbnail_maps(settings) -> None:
             offer(f.stem, -1, "thumb", f.stem)  # C3PI studio photo: the clearest
     for label, zp in state.get("epillid_by_label", {}).items():
         offer(label, _epillid_photo_rank(zp), "zip", zp)
+    label_dir = settings.thumbnails_dir / "label_pill"
+    if label_dir.is_dir():
+        for f in label_dir.glob("*.jpg"):
+            offer(f.stem, 3, "label_thumb", f.stem)  # manufacturer's photo from the drug label
     state["photo_by_group"] = {g: (how, value) for g, (_, how, value) in best.items()}
 
     package: dict[str, tuple[str, str]] = {}
@@ -175,7 +179,9 @@ def _build_thumbnail_maps(settings) -> None:
                     package.setdefault(g, (kind, f.stem))
     state["package_by_group"] = package
     n = len(groups.members)
-    print(f"[startup] Thumbnails: real pill photo for {len(best)}/{n} pills ({len(best) / max(1, n):.0%}), "
+    from_labels = sum(1 for _, how, _v in best.values() if how == "label_thumb")
+    print(f"[startup] Thumbnails: real pill photo for {len(best)}/{n} pills ({len(best) / max(1, n):.0%}; "
+          f"{from_labels} from drug labels), "
           f"package image for {len(set(package) - set(best))} more.")
 
 
@@ -233,7 +239,7 @@ def health():
 # C3PI pill photos, package/ the best DailyMed image (almost always
 # package/label art). Files directly in thumbnails_dir are from an older
 # run of the script, which was DailyMed-only, so they count as package art.
-_THUMB_SUBDIRS = {"pill": "pill", "package": "package", "legacy": ""}
+_THUMB_SUBDIRS = {"pill": "pill", "label_pill": "label_pill", "package": "package", "legacy": ""}
 
 
 def _epillid_photo_rank(zip_path: str) -> int:
@@ -269,6 +275,8 @@ def _resolve_thumbnail(label: str) -> tuple[str | None, str | None]:
         how, value = photo
         if how == "zip":
             return f"/api/reference-image?path={quote(value)}", "pill_photo"
+        if how == "label_thumb":
+            return f"/api/thumbnail?label={quote(value)}&kind=label_pill", "pill_photo"
         return f"/api/thumbnail?label={quote(value)}&kind=pill", "pill_photo"
     for kind in ("package", "legacy"):
         if _thumbnail_file(label, kind).exists():

@@ -53,7 +53,8 @@ _PACKAGING_NAME = re.compile(
     r"display|artwork|submission|insert|vial|tube|bag|pouch|case|outer|foil|sachet",
     re.I,
 )
-_FIGURE_NAME = re.compile(r"fig|structure|struct|formula|chem|chart|graph|table|diagram", re.I)
+# "table(?!t)": "table" is a figure, but "tablet" is the pill itself.
+_FIGURE_NAME = re.compile(r"fig|structure|struct|formula|chem|chart|graph|table(?!t)|diagram", re.I)
 _PILL_NAME = re.compile(r"tablet|tab\b|capsule|cap\b|pill|caplet|softgel|lozenge|spl[-_ ]?image", re.I)
 
 REJECT = -1e9
