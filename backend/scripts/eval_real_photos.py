@@ -113,9 +113,11 @@ def truth_imprint(n: str, names: DrugNameLookup, labels: set[str]) -> str | None
     return None
 
 
-def rank_of_truth(ident, truth_labels: set[str], truth_keys: set[tuple]) -> int | None:
+def rank_of_truth(ident, names: DrugNameLookup, truth_labels: set[str], truth_keys: set[tuple]) -> int | None:
+    truth_groups = {names.dedupe_key(l, None) for l in truth_labels}
     for i, (p, info, _m, _s) in enumerate(ident.ranked, 1):
-        if p.label in truth_labels or (info and pill_key(p.label, info) in truth_keys):
+        if (p.label in truth_labels or names.dedupe_key(p.label, info) in truth_groups
+                or (info and pill_key(p.label, info) in truth_keys)):
             return i
     return None
 
@@ -139,6 +141,7 @@ def main_() -> int:
     print("Loading the model exactly as the server does...")
     clf = load_classifier(settings)
     names = DrugNameLookup()
+    main.attach_pill_groups(clf, names)  # same duplicate merging as the server
     main._check_artifacts(clf, names, settings)
 
     dropped = restrict_gallery(clf, lambda p: "/dc_224/" in p)
@@ -180,7 +183,7 @@ def main_() -> int:
                 rec[c] = ""
                 continue
             ident = main.identify(clf, names, [img], imprint=imprint, imprint_confirmed=True, query_embs=embs)
-            rank = rank_of_truth(ident, truth_labels, truth_keys)
+            rank = rank_of_truth(ident, names, truth_labels, truth_keys)
             s = stats[c]
             s[2] += 1
             s[0] += rank == 1

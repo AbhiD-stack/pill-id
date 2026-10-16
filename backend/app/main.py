@@ -27,7 +27,10 @@ from PIL import Image, UnidentifiedImageError
 
 from classifier import DinoV2PillClassifier
 from config import get_settings
-from drug_names import DrugNameLookup, dedupe_pills, display_ndc, ndc_from_ref_path, pill_key
+from collections import defaultdict
+
+from drug_names import DrugNameLookup, dedupe_pills, display_ndc, ndc_from_ref_path
+from pill_groups import PillGroups
 from imprint_match import ocr_engine, read_imprint_text, score_imprint_match, warm_up_ocr
 from imprint_vision import read_imprint_with_vision, vision_available
 from reference_images import ReferenceImageStore, map_to_zip_path
@@ -112,23 +115,11 @@ async def lifespan(app: FastAPI):
     state["drug_names"] = DrugNameLookup()
     _check_artifacts(state["classifier"], state["drug_names"], settings)
 
-    # Physical pill -> a real photo of it from ANY of its listings, so a
-    # listing that only has package art can still show the pill itself.
-    # Only imprint-identified pills ("pill" keys) -- those are unambiguous.
-    names: DrugNameLookup = state["drug_names"]
-    photo_by_pill: dict[tuple, tuple[str, str]] = {}
-    for label, zp in state["epillid_by_label"].items():
-        key = pill_key(label, names.lookup_by_label(label))
-        if key[0] == "pill":
-            photo_by_pill.setdefault(key, ("zip", zp))
-    pill_dir = settings.thumbnails_dir / "pill"
-    if pill_dir.is_dir():
-        for f in pill_dir.glob("*.jpg"):
-            key = pill_key(f.stem, names.lookup_by_label(f.stem))
-            if key[0] == "pill":
-                photo_by_pill.setdefault(key, ("thumb", f.stem))
-    state["photo_by_pill"] = photo_by_pill
-    print(f"[startup] Real pill photos available for {len(photo_by_pill)} imprint-identified pills.")
+    # Which listings are the same physical pill (merges duplicates in
+    # results, lends info and photos across listings).
+    groups = attach_pill_groups(state["classifier"], state["drug_names"])
+    print(f"[startup] {len(groups.group_of)} listings -> {len(groups.members)} distinct pills.")
+    _build_thumbnail_maps(settings)
 
     # Load the OCR model now, not on the first scan (EasyOCR's first call
     # loads -- and the very first time downloads -- its model files).
@@ -143,6 +134,51 @@ async def lifespan(app: FastAPI):
         state["ref_store"].close()
 
 
+def attach_pill_groups(clf: DinoV2PillClassifier, names: DrugNameLookup) -> PillGroups:
+    """Group the gallery's labels into physical pills (see pill_groups.py)
+    and attach the grouping to the drug table, which then dedupes, names and
+    lists alternate names by group. Shared with scripts/eval_real_photos.py."""
+    paths: dict[str, list[str]] = defaultdict(list)
+    for path, li in zip(clf.ref_abs_paths, clf.ref_label_indices.cpu().tolist()):
+        paths[str(clf.label_strings[li])].append(str(path))
+    names.groups = PillGroups(clf.label_strings, paths, names)
+    return names.groups
+
+
+def _build_thumbnail_maps(settings) -> None:
+    """Per physical pill: the clearest real photo among ALL its listings,
+    and a package image from any listing. Lets a listing that only has
+    package art -- or no image at all -- show a photo of the pill itself."""
+    groups: PillGroups = state["drug_names"].groups
+    best: dict[str, tuple[int, str, str]] = {}  # group -> (rank, how, value)
+
+    def offer(label: str, rank: int, how: str, value: str) -> None:
+        g = groups.group_of.get(label)
+        if g is not None and (g not in best or rank < best[g][0]):
+            best[g] = (rank, how, value)
+
+    pill_dir = settings.thumbnails_dir / "pill"
+    if pill_dir.is_dir():
+        for f in pill_dir.glob("*.jpg"):
+            offer(f.stem, -1, "thumb", f.stem)  # C3PI studio photo: the clearest
+    for label, zp in state.get("epillid_by_label", {}).items():
+        offer(label, _epillid_photo_rank(zp), "zip", zp)
+    state["photo_by_group"] = {g: (how, value) for g, (_, how, value) in best.items()}
+
+    package: dict[str, tuple[str, str]] = {}
+    for kind in ("package", "legacy"):
+        d = settings.thumbnails_dir / _THUMB_SUBDIRS[kind]
+        if d.is_dir():
+            for f in d.glob("*.jpg"):
+                g = groups.group_of.get(f.stem)
+                if g is not None:
+                    package.setdefault(g, (kind, f.stem))
+    state["package_by_group"] = package
+    n = len(groups.members)
+    print(f"[startup] Thumbnails: real pill photo for {len(best)}/{n} pills ({len(best) / max(1, n):.0%}), "
+          f"package image for {len(set(package) - set(best))} more.")
+
+
 def _check_artifacts(clf: DinoV2PillClassifier, drug_names: DrugNameLookup, settings) -> None:
     """Loud warnings for mismatched model files, which otherwise don't
     error -- they just quietly return worse matches. (The repo's committed
@@ -152,7 +188,7 @@ def _check_artifacts(clf: DinoV2PillClassifier, drug_names: DrugNameLookup, sett
     labels = [str(l) for l in clf.label_strings]
     n_refs = int(clf.ref_embeddings.shape[0])
     in_meta = sum(l in clf.label_meta for l in labels) / max(1, len(labels))
-    with_info = sum(drug_names.lookup_by_label(l) is not None for l in labels) / max(1, len(labels))
+    with_info = sum(drug_names.display_info(l) is not None for l in labels) / max(1, len(labels))
     print(f"[startup] Model check: {len(labels)} drugs, {n_refs} gallery images, from {settings.model_artifacts_dir}. "
           f"{in_meta:.0%} have a category, {with_info:.0%} have drug info.")
     problems = []
@@ -214,37 +250,32 @@ def _thumbnail_file(label: str, kind: str):
     return get_settings().thumbnails_dir / _THUMB_SUBDIRS[kind] / f"{label}.jpg"
 
 
-def _resolve_thumbnail(label: str, ref_path: str | None, ref_store: ReferenceImageStore | None,
-                       info: dict | None = None) -> tuple[str | None, str | None]:
+def _resolve_thumbnail(label: str) -> tuple[str | None, str | None]:
     """(url, kind) -- kind is "pill_photo" (a real photo of the pill) or
-    "package" (package/label art, labeled as such in the app). The clearest
-    real photo wins:
-      1. a C3PI studio photo from thumbnails/pill/ (600 px, plain background);
-      2. the label's best ePillID photo (NIH reference shots before phone
-         photos, see _epillid_photo_rank) -- or the exact matched gallery
-         image when that one is at least as clean;
-      3. a real photo of the same physical pill from another listing;
-      4. DailyMed art from thumbnails/package/ (or the legacy flat folder)."""
+    "package" (package/label art, labeled as such in the app). Looks across
+    every listing of the same physical pill (pill_groups.py):
+      1. this label's own C3PI studio photo;
+      2. the clearest real photo of the pill from any of its listings
+         (C3PI, then ePillID NIH reference shots, then phone photos);
+      3. this label's package image, else any listing's."""
     if _thumbnail_file(label, "pill").exists():
         return f"/api/thumbnail?label={quote(label)}&kind=pill", "pill_photo"
-    best = state.get("epillid_by_label", {}).get(label)
-    if ref_store is not None and ref_path is not None:
-        zip_path = map_to_zip_path(ref_path)
-        if zip_path.startswith("ePillID_data/") and ref_store.has(zip_path) and (
-                best is None or _epillid_photo_rank(zip_path) <= _epillid_photo_rank(best)):
-            best = zip_path
-    if best is not None:
-        return f"/api/reference-image?path={quote(best)}", "pill_photo"
-    if info:
-        # A real photo of the same physical pill from another of its listings.
-        shared = state.get("photo_by_pill", {}).get(pill_key(label, info))
-        if shared and shared[0] == "zip":
-            return f"/api/reference-image?path={quote(shared[1])}", "pill_photo"
-        if shared and shared[0] == "thumb":
-            return f"/api/thumbnail?label={quote(shared[1])}&kind=pill", "pill_photo"
-    for kind, result_kind in (("package", "package"), ("legacy", "package")):
+    names: DrugNameLookup | None = state.get("drug_names")
+    g = names.groups.group_of.get(label) if names is not None and names.groups is not None else None
+    photo = state.get("photo_by_group", {}).get(g) if g is not None else None
+    if photo is None and label in state.get("epillid_by_label", {}):
+        photo = ("zip", state["epillid_by_label"][label])  # no grouping attached (tests)
+    if photo is not None:
+        how, value = photo
+        if how == "zip":
+            return f"/api/reference-image?path={quote(value)}", "pill_photo"
+        return f"/api/thumbnail?label={quote(value)}&kind=pill", "pill_photo"
+    for kind in ("package", "legacy"):
         if _thumbnail_file(label, kind).exists():
-            return f"/api/thumbnail?label={quote(label)}&kind={kind}", result_kind
+            return f"/api/thumbnail?label={quote(label)}&kind={kind}", "package"
+    pkg = state.get("package_by_group", {}).get(g) if g is not None else None
+    if pkg is not None:
+        return f"/api/thumbnail?label={quote(pkg[1])}&kind={pkg[0]}", "package"
     return None, None
 
 
@@ -311,11 +342,11 @@ def identify(clf: DinoV2PillClassifier, drug_names: DrugNameLookup, images: list
     for p in pool:
         # The predicted label is the primary key; ePillID labels (content
         # hashes) fall back to the NDC in their image filename.
-        info = drug_names.lookup_by_label(p.label) or drug_names.lookup(p.ref_path)
+        info = drug_names.display_info(p.label, p.ref_path)
         match = score_imprint_match(text, info.get("imprint") if info else None)
         rows.append((p, info, match, p.score + weight * match.score))
     rows.sort(key=lambda row: row[3], reverse=True)
-    ranked = dedupe_pills(rows, key=lambda row: pill_key(row[0].label, row[1]))
+    ranked = dedupe_pills(rows, key=lambda row: drug_names.dedupe_key(row[0].label, row[1]))
     # A result with no drug name and no NDC tells the user nothing; don't let
     # it take a slot. (scripts/fill_missing_drug_info.py names most of them.)
     ranked = [r for r in ranked if r[1] or display_ndc(r[0].label) or display_ndc(ndc_from_ref_path(r[0].ref_path))]
@@ -357,7 +388,6 @@ async def predict(
     back_image = await _read_image(file_back) if file_back is not None else None
 
     settings = get_settings()
-    ref_store: ReferenceImageStore | None = state["ref_store"]
     drug_names: DrugNameLookup = state["drug_names"]
 
     images = [image, back_image] if back_image is not None else [image]
@@ -368,7 +398,7 @@ async def predict(
 
     results = []
     for p, info, match, fused_score in fused:
-        ref_url, ref_kind = _resolve_thumbnail(p.label, p.ref_path, ref_store, info)
+        ref_url, ref_kind = _resolve_thumbnail(p.label)
         results.append(
             {
                 "label": p.label,
@@ -546,10 +576,7 @@ def thumbnail(
     )
 
 def _build_search_result(label: str, info: dict) -> dict:
-    clf: DinoV2PillClassifier = state["classifier"]
-    ref_store: ReferenceImageStore | None = state["ref_store"]
-    ref_path = clf.ref_path_for_label(label)
-    ref_url, ref_kind = _resolve_thumbnail(label, ref_path, ref_store, info)
+    ref_url, ref_kind = _resolve_thumbnail(label)
     return {
         "label": label,
         "ndc": display_ndc(label),

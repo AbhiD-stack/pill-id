@@ -63,6 +63,25 @@ def _shape_word(shape: Optional[str]) -> str:
     return re.sub(r"[^a-z]", "", re.sub(r"\([^)]*\)", "", (shape or "").lower()))
 
 
+# Words that don't identify a drug (forms, salts, marketing words).
+_STOP = {
+    "tablet", "tablets", "capsule", "capsules", "oral", "extended", "release", "delayed", "film", "coated",
+    "chewable", "orally", "disintegrating", "hydrochloride", "sodium", "potassium", "calcium", "magnesium",
+    "sulfate", "maleate", "mesylate", "besylate", "tartrate", "succinate", "citrate", "phosphate", "acetate",
+    "bromide", "fumarate", "strength", "extra", "regular", "maximum", "dose", "unit", "relief", "adult",
+    "adults", "children", "childrens", "junior", "night", "time", "day", "formula", "caplet", "caplets",
+    "softgel", "softgels", "gelcap", "gelcaps", "pack", "kit", "with", "and", "plus", "free", "leader",
+    "topcare", "equaline", "sunmark", "kirkland", "signature", "care", "health", "good", "sense", "quality",
+    "choice", "rite", "aid", "walgreens", "member", "major", "basics",
+}
+
+
+def _name_words(info: Optional[DrugInfo]) -> set[str]:
+    """Words that identify the drug in its name (not forms, salts or brands)."""
+    words = re.findall(r"[a-z]+", ((info or {}).get("name") or "").lower())
+    return {w for w in words if len(w) >= 4 and w not in _STOP}
+
+
 def pill_key(label: str, info: Optional[DrugInfo]) -> tuple:
     """Identity of the physical pill. The same pill is often listed many
     times: package sizes (70000-0312, 70000-0312-1), repackagers, and store
@@ -76,7 +95,12 @@ def pill_key(label: str, info: Optional[DrugInfo]) -> tuple:
     if info:
         imprint = tuple(sorted(_imprint_tokens(info.get("imprint"))))
         if imprint:
-            return ("pill", imprint, _color_set(info.get("color")), _shape_word(info.get("shape")))
+            # Name words too: different drugs can look identical (yellow
+            # "S 10" is both empagliflozin and tadalafil), and merging those
+            # would hide one. (PillGroups, when attached, merges store
+            # brands of the same pill more completely.)
+            return ("pill", imprint, _color_set(info.get("color")), _shape_word(info.get("shape")),
+                    tuple(sorted(_name_words(info))))
         norm = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
         return ("named", norm(info.get("name")), _color_set(info.get("color")), _shape_word(info.get("shape")))
     m = re.match(r"^(\d{4,5}-\d{3,4})(-\d{1,2})?$", label)
@@ -149,6 +173,22 @@ class DrugNameLookup:
         for label, info in self._table.items():
             self._by_pill.setdefault(pill_key(label, info), []).append(label)
 
+    # Set by the server at startup (pill_groups.PillGroups): which gallery
+    # labels are the same physical pill. None = fall back to pill_key.
+    groups = None
+
+    def dedupe_key(self, label: str, info: Optional[DrugInfo]) -> tuple:
+        return self.groups.key(label) if self.groups is not None else pill_key(label, info)
+
+    def display_info(self, label: str, ref_path: Optional[str] = None) -> Optional[DrugInfo]:
+        """Info to show for a label: its own, else its pill group's, else by
+        the NDC in its reference image filename."""
+        if self.groups is not None:
+            info = self.groups.info(label)
+            if info:
+                return info
+        return self.lookup_by_label(label) or (self.lookup(ref_path) if ref_path else None)
+
     def lookup(self, ref_path: str) -> Optional[DrugInfo]:
         return self._table.get(ndc_from_ref_path(ref_path))
 
@@ -158,6 +198,8 @@ class DrugNameLookup:
 
     def also_sold_as(self, label: str, info: Optional[DrugInfo], limit: int = 4) -> list[str]:
         """Other names the same physical pill is listed under."""
+        if self.groups is not None:
+            return self.groups.also_sold_as(label, limit)
         if not info:
             return []
         same = self._by_pill.get(pill_key(label, info), [])
@@ -192,7 +234,8 @@ class DrugNameLookup:
         by_len = lambda row: (len(row[1].get("name") or ""), row[1].get("name") or "")
         exact = [r for r in starts if (r[1].get("name") or "").lower() == q]
         starts = sorted([r for r in starts if (r[1].get("name") or "").lower() != q], key=by_len)
-        return dedupe_pills(exact + starts + sorted(contains, key=by_len))[:limit]
+        return dedupe_pills(exact + starts + sorted(contains, key=by_len),
+                            key=lambda row: self.dedupe_key(row[0], row[1]))[:limit]
 
     def search_by_appearance(
         self,
@@ -267,7 +310,7 @@ class DrugNameLookup:
             if count > 0:
                 scored.append((label, info, count))
         scored.sort(key=lambda row: (-row[2], unmentioned.get(row[0], 0)))
-        return dedupe_pills(scored)[:limit]
+        return dedupe_pills(scored, key=lambda row: self.dedupe_key(row[0], row[1]))[:limit]
 
     @property
     def imprint_vocab(self) -> set[str]:
