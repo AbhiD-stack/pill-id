@@ -63,3 +63,44 @@ export function judgeMyPillMatch(ranked: MyPillMatch[], galleryTopScore: number)
   }
   return null;
 }
+
+// ── Checking a pill against the patient's own medicines ──────────────────
+// The main flow for a senior: "which of MY medicines is this?" -- a few
+// candidates, each with the patient's own photo as the reference. Three
+// answers: it IS one of them; it could be one of two (check the letters);
+// or it doesn't look like any of them (don't take it). The last answer is
+// the safety net -- a spouse's pill or a wrong pill in the organizer must
+// not be forced onto one of the patient's medicines.
+//
+// Thresholds: set from backend/scripts/eval_my_pills.py (real phone photos,
+// simulated households incl. look-alikes and other people's pills). Until
+// that runs on the real model these are deliberately cautious: more
+// "check the letters", fewer confident answers.
+export const MY_PILLS = { REJECT: 0.65, MATCH: 0.85, MARGIN: 0.05 };
+
+export type MedMatch = { key: string; pill: ReferencePill; score: number };
+
+// One row per medicine (a medicine may have several saved photos/pills).
+export function rankMyMedicines(queryEmbeddings: number[][], pills: ReferencePill[]): MedMatch[] {
+  const best = new Map<string, MedMatch>();
+  for (const { pill, score } of scoreMyPills(queryEmbeddings, pills)) {
+    const key = `${pill.drugName.trim().toLowerCase()}|${pill.ndc || ""}`;
+    if (!best.has(key) || best.get(key)!.score < score) best.set(key, { key, pill, score });
+  }
+  return [...best.values()].sort((a, b) => b.score - a.score);
+}
+
+export type CheckResult =
+  | { kind: "match"; best: MedMatch }
+  | { kind: "check"; options: MedMatch[] }
+  | { kind: "none"; closest: MedMatch | null };
+
+export function checkMyPill(ranked: MedMatch[], t = MY_PILLS): CheckResult {
+  const [first, second] = ranked;
+  if (!first || first.score < t.REJECT) return { kind: "none", closest: first ?? null };
+  const margin = first.score - (second ? second.score : -1);
+  if (first.score >= t.MATCH && margin >= t.MARGIN) return { kind: "match", best: first };
+  const options = [first];
+  if (second && second.score >= t.REJECT && margin < t.MARGIN) options.push(second);
+  return { kind: "check", options };
+}

@@ -243,3 +243,4 @@ feedback/
 backend/app/data/photo_gallery.pt
 backend/photo_gallery_rejected.txt
 backend/eval_results.csv
+backend/my_pills_embeddings.npz

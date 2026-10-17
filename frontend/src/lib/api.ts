@@ -297,6 +297,21 @@ export async function readImprint(
   return response.json();
 }
 
+// Embeddings of a fresh photo (front, and back if taken) -- used to check a
+// pill against the patient's own saved medicines.
+export async function embedCanvases(front: HTMLCanvasElement, back?: HTMLCanvasElement | null): Promise<number[][]> {
+  const formData = new FormData();
+  formData.append("file", await canvasToFile(front));
+  if (back) formData.append("file_back", await canvasToFile(back));
+  const response = await fetch(`${apiBase}/api/embed`, {
+    method: "POST",
+    body: formData,
+    headers: { "ngrok-skip-browser-warning": "true" },
+  });
+  if (!response.ok) throw await apiError(response, "Checking the pill");
+  return ((await response.json()) as { embeddings: number[][] }).embeddings;
+}
+
 // Embeddings for a photo saved to "My Pills" before scans returned them.
 export async function embedPhoto(photoDataUrl: string): Promise<number[][]> {
   const blob = await (await fetch(photoDataUrl)).blob();

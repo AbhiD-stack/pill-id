@@ -175,7 +175,7 @@ export interface Medication {
 }
 
 const BUCKET_ORDER: TimeOfDay[] = ["morning", "noon", "night"];
-const medKey = (drugName: string, ndc?: string) => `${drugName.trim().toLowerCase()}|${ndc || ""}`;
+export const medKey = (drugName: string, ndc?: string) => `${drugName.trim().toLowerCase()}|${ndc || ""}`;
 
 export function localDate(d = new Date()): string {
   const p = (n: number) => String(n).padStart(2, "0");

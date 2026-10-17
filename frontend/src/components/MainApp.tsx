@@ -5,6 +5,9 @@ import WelcomeNotice from "./WelcomeNotice";
 import Scanner from "@/components/Scanner";
 import PillSearchPanel from "@/components/PillSearchPanel";
 import TodayView from "@/components/TodayView";
+import CheckPill from "@/components/CheckPill";
+import AddMedicine from "@/components/AddMedicine";
+import MyMedicines from "@/components/MyMedicines";
 import { useReminders } from "@/components/useReminders";
 import { speak } from "@/components/AudioAlert";
 import {
@@ -28,14 +31,17 @@ function readLargeText(): boolean {
   }
 }
 
-type TabType = "scan" | "schedule" | "safety" | "lookup" | "passport" | "export";
+type TabType = "check" | "schedule" | "meds" | "identify" | "safety" | "export";
+type Adding = { front: HTMLCanvasElement | null; back: HTMLCanvasElement | null } | null;
 
 interface MainAppProps {
   onResetSession: () => void;
 }
 
 export default function MainApp({ onResetSession }: MainAppProps) {
-  const [activeTab, setActiveTab] = useState<TabType>("scan");
+  const [activeTab, setActiveTab] = useState<TabType>("meds");
+  const [adding, setAdding] = useState<Adding>(null);
+  const [identifyMode, setIdentifyMode] = useState<"scan" | "name">("scan");
   const [schedule, setSchedule] = useState<ScheduleEntry[]>([]);
   const [meds, setMeds] = useState<Medication[]>([]);
   const [beersFlags, setBeersFlags] = useState<{ med: Medication; flag: BeersFlag }[]>([]);
@@ -48,8 +54,11 @@ export default function MainApp({ onResetSession }: MainAppProps) {
 
   useEffect(() => {
     setLargeText(readLargeText());
-    // Open on Today when the user already has medicines set up.
-    getMedications().then((m) => { if (m.length > 0) setActiveTab("schedule"); });
+    // Open on Today once medicines are set up; until then, on setup.
+    Promise.all([getMedications(), getReferencePills()]).then(([m, p]) => {
+      if (m.length > 0) setActiveTab("schedule");
+      else if (p.length > 0) setActiveTab("check");
+    });
   }, []);
 
   useEffect(() => {
@@ -63,20 +72,20 @@ export default function MainApp({ onResetSession }: MainAppProps) {
   // match is dropped into a time bucket) -- refresh from it whenever a tab
   // that displays it becomes active, so drops made in the Scan tab show up.
   useEffect(() => {
-    if (activeTab === "schedule" || activeTab === "safety" || activeTab === "passport") {
+    if (activeTab === "schedule" || activeTab === "safety" || activeTab === "meds") {
       getSchedule().then(setSchedule);
       getMedications().then(setMeds);
     }
-    if (activeTab === "passport") {
+    if (activeTab === "meds") {
       getReferencePills().then(setReferencePills);
     }
-  }, [activeTab]);
+  }, [activeTab, medsVersion]);
 
   // Pills saved before scans returned embeddings can't be matched yet --
   // fetch their embeddings once (best-effort; retried next time the tab
   // opens if the backend is unreachable).
   useEffect(() => {
-    if (activeTab !== "passport") return;
+    if (activeTab !== "meds") return;
     const missing = referencePills.filter((r) => !r.embeddings || r.embeddings.length === 0);
     if (missing.length === 0) return;
     let cancelled = false;
@@ -182,9 +191,33 @@ export default function MainApp({ onResetSession }: MainAppProps) {
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col p-6 max-w-3xl mx-auto w-full">
-        {activeTab === "scan" && (
-          <div className="flex flex-col flex-1">
-             <Scanner  />
+        {activeTab === "check" && (
+          <CheckPill
+            onSetup={() => { setActiveTab("meds"); setAdding({ front: null, back: null }); }}
+            onAddNew={(front, back) => { setActiveTab("meds"); setAdding({ front, back }); }}
+            onIdentify={() => { setIdentifyMode("scan"); setActiveTab("identify"); }}
+          />
+        )}
+
+        {activeTab === "identify" && (
+          <div className="flex flex-col flex-1 space-y-4">
+            <div>
+              <h2 className="text-2xl font-bold text-slate-900">Identify a pill</h2>
+              <p className="text-base text-slate-600">For a pill that isn&apos;t one of your medicines.</p>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {(["scan", "name"] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setIdentifyMode(m)}
+                  aria-pressed={identifyMode === m}
+                  className={`py-3 rounded-xl border-2 text-base font-bold ${identifyMode === m ? "bg-indigo-600 border-indigo-600 text-white" : "bg-white border-slate-300 text-slate-700"}`}
+                >
+                  {m === "scan" ? "📷 From a photo" : "⌨️ By name"}
+                </button>
+              ))}
+            </div>
+            {identifyMode === "scan" ? <Scanner /> : <PillSearchPanel addToMeds onAdded={onMedsChanged} />}
           </div>
         )}
 
@@ -198,7 +231,11 @@ export default function MainApp({ onResetSession }: MainAppProps) {
                 </button>
               </div>
             )}
-            <TodayView onScan={() => setActiveTab("scan")} onChanged={onMedsChanged} />
+            <TodayView
+              onScan={() => { setActiveTab("meds"); setAdding({ front: null, back: null }); }}
+              onManage={() => setActiveTab("meds")}
+              onChanged={onMedsChanged}
+            />
           </div>
         )}
 
@@ -275,88 +312,18 @@ export default function MainApp({ onResetSession }: MainAppProps) {
           </div>
         )}
 
-        {activeTab === "lookup" && (
-          <div className="flex flex-col space-y-4">
-            <div>
-              <h2 className="text-xl font-bold text-slate-900">Look Up a Medication</h2>
-              <p className="text-sm text-slate-500">
-                No photo needed — search by name, or describe what the pill looks like.
-              </p>
-            </div>
-            <PillSearchPanel addToMeds onAdded={onMedsChanged} />
-          </div>
+        {activeTab === "meds" && adding && (
+          <AddMedicine
+            initialFront={adding.front}
+            initialBack={adding.back}
+            onFinished={() => { setAdding(null); onMedsChanged(); }}
+            onCancel={() => setAdding(null)}
+          />
         )}
 
-        {activeTab === "passport" && (
+        {activeTab === "meds" && !adding && (
           <div className="flex flex-col space-y-6">
-            <div>
-              <h2 className="text-xl font-bold text-slate-900">My Pills</h2>
-              <p className="text-sm text-slate-500 mt-1">
-                Save one photo of each medication you take. Every future scan is checked against your own photos
-                first. Your pill, from your pharmacy, is a much closer match than any database picture.
-              </p>
-              <p className="text-xs text-slate-500 mt-2">
-                To add a pill: scan it in the Scan tab, then tap &quot;📌 Save to My Pills&quot; on the right match, or
-                use &quot;Know what this pill is?&quot; if it isn&apos;t listed. Saved photos are stored only on this device.
-              </p>
-              <p className="text-xs text-slate-500 mt-2">
-                A refill can look different: pharmacies switch between generic manufacturers. If a new refill
-                doesn&apos;t match your saved photo, that isn&apos;t necessarily a mistake, but it&apos;s worth asking
-                your pharmacist.
-              </p>
-            </div>
-
-            <button
-              onClick={() => setActiveTab("scan")}
-              className="w-full px-4 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl transition shadow-sm"
-            >
-              + Add a pill (scan it)
-            </button>
-
-            {referencePills.length === 0 ? (
-              <div className="p-8 text-center border-2 border-dashed border-slate-200 rounded-2xl bg-white shadow-sm text-slate-400 text-sm">
-                No pills saved yet. Setting this up with a caregiver, pharmacist or doctor is the best way to confirm
-                each pill is saved under the right name.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {referencePills.map((r) => (
-                  <div key={r.id} className="p-4 bg-white border border-slate-200 rounded-xl shadow-sm flex gap-3">
-                    <img
-                      src={r.photoDataUrl}
-                      alt={r.drugName}
-                      className="w-20 h-20 rounded-lg border border-slate-200 object-contain bg-slate-50 p-1 shrink-0"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <p className="font-bold text-slate-900 text-sm truncate">{r.drugName}</p>
-                      <p className="text-[11px] text-slate-400 font-mono truncate">NDC: {r.ndc || "N/A"}</p>
-                      {(r.imprint || r.color || r.shape) && (
-                        <p className="text-[11px] text-slate-500">
-                          {[r.imprint && `Imprint: ${r.imprint}`, r.color, r.shape].filter(Boolean).join(" · ")}
-                        </p>
-                      )}
-                      <p className="text-[10px] text-slate-400 mt-1">
-                        Saved {new Date(r.savedAt).toLocaleDateString()}
-                        {r.embeddings && r.embeddings.length > 0 ? (
-                          <span className="text-emerald-600"> · used for matching</span>
-                        ) : (
-                          <span className="text-amber-600"> · preparing for matching (needs the server)</span>
-                        )}
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => {
-                        deleteReferencePill(r.id).then(() => getReferencePills().then(setReferencePills));
-                      }}
-                      className="self-start text-slate-400 hover:text-red-600 text-xs px-2 py-1"
-                      title="Remove"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
+            <MyMedicines onAdd={() => setAdding({ front: null, back: null })} onChanged={onMedsChanged} />
             <div className="pt-4 border-t border-slate-200">
               <h2 className="text-xl font-bold text-slate-900">Medication Passport</h2>
               <p className="text-sm text-slate-500">Portable emergency summary profile.</p>
@@ -427,49 +394,50 @@ export default function MainApp({ onResetSession }: MainAppProps) {
       </div>
 
       {/* Fixed Mobile Bottom Navigation Bar */}
-      <nav className="fixed bottom-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-md border-t border-slate-200 px-2 py-2 flex justify-around items-center shadow-lg">
+      <nav className="fixed bottom-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-md border-t border-slate-200 px-1 py-2 flex justify-around items-center shadow-lg">
         <button
-          onClick={() => setActiveTab("scan")}
-          className={`flex flex-col items-center flex-1 py-1.5 transition ${activeTab === "scan" ? "text-blue-600 font-semibold" : "text-slate-500 hover:text-slate-800"}`}
+          onClick={() => { setActiveTab("check"); setAdding(null); }}
+          aria-current={activeTab === "check" ? "page" : undefined}
+          className={`flex flex-col items-center flex-1 py-1.5 transition ${activeTab === "check" ? "text-blue-600 font-semibold" : "text-slate-500 hover:text-slate-800"}`}
         >
           <span className="text-xl">📷</span>
-          <span className="text-[11px] mt-0.5">Scan</span>
+          <span className="text-[11px] mt-0.5">Check pill</span>
         </button>
-
         <button
-          onClick={() => setActiveTab("schedule")}
+          onClick={() => { setActiveTab("schedule"); setAdding(null); }}
+          aria-current={activeTab === "schedule" ? "page" : undefined}
           className={`flex flex-col items-center flex-1 py-1.5 transition ${activeTab === "schedule" ? "text-blue-600 font-semibold" : "text-slate-500 hover:text-slate-800"}`}
         >
           <span className="text-xl">✅</span>
           <span className="text-[11px] mt-0.5">Today</span>
         </button>
-
         <button
-          onClick={() => setActiveTab("safety")}
+          onClick={() => { setActiveTab("meds"); setAdding(null); }}
+          aria-current={activeTab === "meds" ? "page" : undefined}
+          className={`flex flex-col items-center flex-1 py-1.5 transition ${activeTab === "meds" ? "text-blue-600 font-semibold" : "text-slate-500 hover:text-slate-800"}`}
+        >
+          <span className="text-xl">💊</span>
+          <span className="text-[11px] mt-0.5">My meds</span>
+        </button>
+        <button
+          onClick={() => { setActiveTab("identify"); setAdding(null); }}
+          aria-current={activeTab === "identify" ? "page" : undefined}
+          className={`flex flex-col items-center flex-1 py-1.5 transition ${activeTab === "identify" ? "text-blue-600 font-semibold" : "text-slate-500 hover:text-slate-800"}`}
+        >
+          <span className="text-xl">🔍</span>
+          <span className="text-[11px] mt-0.5">Identify</span>
+        </button>
+        <button
+          onClick={() => { setActiveTab("safety"); setAdding(null); }}
+          aria-current={activeTab === "safety" ? "page" : undefined}
           className={`flex flex-col items-center flex-1 py-1.5 transition ${activeTab === "safety" ? "text-blue-600 font-semibold" : "text-slate-500 hover:text-slate-800"}`}
         >
           <span className="text-xl">🛡️</span>
           <span className="text-[11px] mt-0.5">Safety</span>
         </button>
-
         <button
-          onClick={() => setActiveTab("lookup")}
-          className={`flex flex-col items-center flex-1 py-1.5 transition ${activeTab === "lookup" ? "text-blue-600 font-semibold" : "text-slate-500 hover:text-slate-800"}`}
-        >
-          <span className="text-xl">🔍</span>
-          <span className="text-[11px] mt-0.5">Lookup</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab("passport")}
-          className={`flex flex-col items-center flex-1 py-1.5 transition ${activeTab === "passport" ? "text-blue-600 font-semibold" : "text-slate-500 hover:text-slate-800"}`}
-        >
-          <span className="text-xl">📌</span>
-          <span className="text-[11px] mt-0.5">My Pills</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab("export")}
+          onClick={() => { setActiveTab("export"); setAdding(null); }}
+          aria-current={activeTab === "export" ? "page" : undefined}
           className={`flex flex-col items-center flex-1 py-1.5 transition ${activeTab === "export" ? "text-blue-600 font-semibold" : "text-slate-500 hover:text-slate-800"}`}
         >
           <span className="text-xl">📤</span>

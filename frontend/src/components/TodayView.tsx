@@ -7,33 +7,42 @@ import {
   getMedications,
   localDate,
   Medication,
-  removeMedication,
+  getReferencePills,
+  medKey,
   setDoseStatus,
-  setMedicationTimes,
   TimeOfDay,
 } from "@/lib/db";
 import { doseApplies, formatTime, getSlotTimes, setSlotTime, SLOTS, slotState } from "@/lib/slots";
 import { speak, vibrate } from "./AudioAlert";
-import PillSearchPanel from "./PillSearchPanel";
-import { TimePicker } from "./AddToMedsButton";
 
 // Today's doses (tap Taken / Skip), adherence over the last 7 days, and
 // medication management (times, removal, adding by name).
-export default function TodayView({ onScan, onChanged }: { onScan: () => void; onChanged?: () => void }) {
+export default function TodayView({
+  onScan,
+  onManage,
+  onChanged,
+}: {
+  onScan: () => void;
+  onManage: () => void;
+  onChanged?: () => void;
+}) {
   const [meds, setMeds] = useState<Medication[]>([]);
   const [doses, setDoses] = useState<DoseRecord[]>([]);
   const [times, setTimes] = useState<Record<TimeOfDay, string>>(getSlotTimes());
   const [now, setNow] = useState(new Date());
-  const [editing, setEditing] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
+  const [photos, setPhotos] = useState<Record<string, string>>({});
   const today = localDate(now);
 
   const refresh = useCallback(async () => {
     const weekAgo = new Date();
     weekAgo.setDate(weekAgo.getDate() - 6);
-    const [m, d] = await Promise.all([getMedications(), getDoses(localDate(weekAgo), localDate())]);
+    const [m, d, pills] = await Promise.all([getMedications(), getDoses(localDate(weekAgo), localDate()), getReferencePills()]);
     setMeds(m);
     setDoses(d);
+    // Each medicine's own pill photo, so the checklist shows WHICH pill to take.
+    const byKey: Record<string, string> = {};
+    for (const p of pills) byKey[medKey(p.drugName, p.ndc)] ??= p.photoDataUrl;
+    setPhotos(byKey);
     onChanged?.();
   }, [onChanged]);
 
@@ -74,17 +83,14 @@ export default function TodayView({ onScan, onChanged }: { onScan: () => void; o
     return due ? Math.round((100 * taken) / due) : null;
   })();
 
-  if (meds.length === 0 && !adding) {
+  if (meds.length === 0) {
     return (
       <div className="space-y-4">
         <h2 className="text-2xl font-bold text-slate-900">Today</h2>
         <div className="p-8 text-center border-2 border-dashed border-slate-300 rounded-2xl bg-white space-y-4">
-          <p className="text-lg text-slate-600">No medicines added yet.</p>
+          <p className="text-lg text-slate-600">No medicines set up yet.</p>
           <button onClick={onScan} className="w-full py-4 bg-indigo-600 text-white text-lg font-bold rounded-2xl">
-            📷 Scan a pill to add it
-          </button>
-          <button onClick={() => setAdding(true)} className="w-full py-4 bg-slate-100 text-slate-800 text-lg font-bold rounded-2xl">
-            ⌨️ Add a medicine by name
+            Set up my medicines
           </button>
         </div>
       </div>
@@ -118,6 +124,8 @@ export default function TodayView({ onScan, onChanged }: { onScan: () => void; o
           return doseApplies(e, today) && !statusOf(e.id);
         });
         const late = state === "overdue" && pending.length > 0;
+        // "Done" only when there was a dose to take today and it's been marked.
+        const anyApplies = slotMeds.some((m) => doseApplies(m.entries.find((x) => x.bucket === slot.key)!, today));
         return (
           <section key={slot.key} className={`rounded-2xl border-2 bg-white shadow-sm overflow-hidden ${late ? "border-red-400" : "border-slate-200"}`}>
             <div className={`flex items-center justify-between px-4 py-3 ${late ? "bg-red-50" : "bg-slate-50"}`}>
@@ -128,7 +136,7 @@ export default function TodayView({ onScan, onChanged }: { onScan: () => void; o
                 <span className="text-sm font-bold text-red-700">Missed?</span>
               ) : state === "due" && pending.length > 0 ? (
                 <span className="text-sm font-bold text-amber-700">Due now</span>
-              ) : pending.length === 0 ? (
+              ) : pending.length === 0 && anyApplies ? (
                 <span className="text-sm font-bold text-emerald-700">✓ Done</span>
               ) : null}
             </div>
@@ -139,7 +147,10 @@ export default function TodayView({ onScan, onChanged }: { onScan: () => void; o
                 return (
                   <div key={entry.id} className="p-4 space-y-3">
                     <div className="flex items-start justify-between gap-2">
-                      <p className={`text-lg font-semibold min-w-0 break-words ${status ? "text-slate-400 line-through" : "text-slate-900"}`}>
+                      {photos[med.key] && (
+                        <img src={photos[med.key]} alt="" className="w-14 h-14 rounded-xl border border-slate-200 object-contain bg-white shrink-0" />
+                      )}
+                      <p className={`flex-1 text-lg font-semibold min-w-0 break-words ${status ? "text-slate-400 line-through" : "text-slate-900"}`}>
                         {med.drugName}
                       </p>
                       <button
@@ -183,67 +194,9 @@ export default function TodayView({ onScan, onChanged }: { onScan: () => void; o
         );
       })}
 
-      {/* Manage medicines */}
-      <section className="space-y-3">
-        <h3 className="text-lg font-bold text-slate-900">My medicines</h3>
-        {meds.map((med) => (
-          <div key={med.key} className="p-4 bg-white border border-slate-200 rounded-2xl space-y-3">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <p className="font-semibold text-slate-900 break-words">{med.drugName}</p>
-                {med.ndc && <p className="text-xs text-slate-400 font-mono truncate">NDC {med.ndc}</p>}
-                <p className="text-sm text-slate-600">
-                  {med.buckets.map((b) => SLOTS.find((s) => s.key === b)!.label).join(", ")}
-                </p>
-              </div>
-              <button
-                onClick={() => setEditing(editing === med.key ? null : med.key)}
-                className="shrink-0 px-3 py-2 bg-slate-100 rounded-xl text-sm font-semibold text-slate-700"
-              >
-                {editing === med.key ? "Done" : "Edit"}
-              </button>
-            </div>
-            {editing === med.key && (
-              <div className="space-y-3">
-                <TimePicker
-                  initial={med.buckets}
-                  saveLabel="Save times"
-                  onSave={async (buckets) => {
-                    await setMedicationTimes(med.drugName, med.ndc, buckets);
-                    setEditing(null);
-                    refresh();
-                  }}
-                />
-                <button
-                  onClick={async () => {
-                    if (!confirm(`Remove ${med.drugName} from your medicines?`)) return;
-                    await removeMedication(med.drugName, med.ndc);
-                    setEditing(null);
-                    refresh();
-                  }}
-                  className="w-full py-3 border-2 border-red-300 text-red-700 font-bold rounded-xl"
-                >
-                  Remove this medicine
-                </button>
-              </div>
-            )}
-          </div>
-        ))}
-        {adding ? (
-          <div className="p-4 bg-white border border-slate-200 rounded-2xl space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="font-semibold text-slate-900">Add a medicine by name</p>
-              <button onClick={() => setAdding(false)} className="text-sm text-slate-500 underline">Close</button>
-            </div>
-            <PillSearchPanel compact defaultMode="name" addToMeds onAdded={refresh} />
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-3">
-            <button onClick={onScan} className="py-3.5 bg-indigo-600 text-white font-bold rounded-2xl">📷 Scan to add</button>
-            <button onClick={() => setAdding(true)} className="py-3.5 bg-slate-100 text-slate-800 font-bold rounded-2xl">⌨️ Add by name</button>
-          </div>
-        )}
-      </section>
+      <button onClick={onManage} className="w-full py-3.5 bg-slate-100 text-slate-800 text-base font-bold rounded-2xl">
+        💊 Add or change my medicines
+      </button>
 
       {/* Dose times */}
       <section className="p-4 bg-white border border-slate-200 rounded-2xl space-y-3">
