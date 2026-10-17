@@ -39,6 +39,10 @@ export interface ReferencePill {
   // scans are compared against these on-device ("My Pills" matching).
   // Missing on pills saved before that existed -- backfilled via /api/embed.
   embeddings?: number[][];
+  // Embeddings of later scans the app confidently recognized as this pill
+  // (most recent last, capped): the reference adapts to the patient's own
+  // lighting, surfaces and camera. Setup photos are never replaced.
+  learnedEmbeddings?: number[][];
   savedAt: number;
   notes?: string;
 }

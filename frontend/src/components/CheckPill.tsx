@@ -3,10 +3,10 @@
 import { useEffect, useState } from "react";
 import { embedCanvases } from "@/lib/api";
 import {
-  getDoses, getMedications, getReferencePills, localDate, medKey, setDoseStatus,
+  getDoses, getMedications, getReferencePills, localDate, medKey, setDoseStatus, updateReferencePill,
   type Medication, type ReferencePill, type ScheduleEntry,
 } from "@/lib/db";
-import { checkMyPill, rankMyMedicines, type CheckResult, type MedMatch } from "@/lib/myPills";
+import { checkMyPill, rankMyMedicines, withLearnedScan, type CheckResult, type MedMatch } from "@/lib/myPills";
 import { doseApplies, SLOTS, slotState } from "@/lib/slots";
 import ImageCapture from "./ImageCapture";
 import { speak, vibrate } from "./AudioAlert";
@@ -32,6 +32,8 @@ export default function CheckPill({
   const [result, setResult] = useState<CheckResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState<MedMatch | null>(null);
+  // The pill as it was before this scan was learned, to undo on "That's not right".
+  const [beforeLearn, setBeforeLearn] = useState<ReferencePill | null>(null);
 
   useEffect(() => {
     getReferencePills().then(setPills);
@@ -43,6 +45,7 @@ export default function CheckPill({
     setStage("checking");
     setError(null);
     setConfirmed(null);
+    setBeforeLearn(null);
     try {
       const emb = await embedCanvases(f, b);
       const res = checkMyPill(rankMyMedicines(emb, ready));
@@ -51,6 +54,16 @@ export default function CheckPill({
       if (res.kind === "match") {
         vibrate([80, 40, 80]);
         setConfirmed(res.best);
+        // Confident match: remember this photo too, so future checks of this
+        // pill handle the patient's own lighting and angles better.
+        try {
+          setBeforeLearn(res.best.pill);
+          const learned = withLearnedScan(res.best.pill, emb);
+          await updateReferencePill(learned);
+          setPills((ps) => (ps ?? []).map((p) => (p.id === learned.id ? learned : p)));
+        } catch (err) {
+          console.error("Couldn't update the saved pill (non-fatal):", err);
+        }
       } else if (res.kind === "none") {
         vibrate([300, 100, 300]);
       }
@@ -216,7 +229,19 @@ export default function CheckPill({
             </button>
           )}
           {confirmed && (
-            <button onClick={() => { setConfirmed(null); setResult({ kind: "none", closest: null }); }} className="w-full py-2 text-base text-slate-600 underline">
+            <button
+              onClick={async () => {
+                if (beforeLearn) {
+                  // Forget this scan: it wasn't this pill.
+                  await updateReferencePill(beforeLearn).catch(() => {});
+                  setPills((ps) => (ps ?? []).map((p) => (p.id === beforeLearn.id ? beforeLearn : p)));
+                  setBeforeLearn(null);
+                }
+                setConfirmed(null);
+                setResult({ kind: "none", closest: null });
+              }}
+              className="w-full py-2 text-base text-slate-600 underline"
+            >
               That&apos;s not right
             </button>
           )}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { embedCanvases, identifyPill, type PillMatch, type SearchResult } from "@/lib/api";
+import { contributePhoto, embedCanvases, identifyPill, type PillMatch, type SearchResult } from "@/lib/api";
 import { addReferencePill, setMedicationTimes, type TimeOfDay } from "@/lib/db";
 import ImageCapture from "./ImageCapture";
 import PillSearchPanel from "./PillSearchPanel";
@@ -10,7 +10,7 @@ import { TimePicker } from "./AddToMedsButton";
 import { vibrate } from "./AudioAlert";
 
 type Step = "front" | "back" | "name" | "times" | "done";
-type Chosen = { drugName: string; ndc?: string; imprint?: string; color?: string; shape?: string };
+type Chosen = { drugName: string; label: string; ndc?: string; imprint?: string; color?: string; shape?: string };
 
 // Setting up one medicine, ideally with a caregiver or pharmacist and the
 // pharmacy bottle in hand: photograph the pill (both sides), say which
@@ -37,6 +37,9 @@ export default function AddMedicine({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [added, setAdded] = useState<string[]>([]);
+  // Share this pill's photo so the app recognizes it for everyone. Clearly
+  // explained on screen, and easy to turn off.
+  const [share, setShare] = useState(true);
 
   // As soon as the photos are in: suggestions from the photo (the catalog
   // model) and the embeddings the saved pill will be matched with.
@@ -90,6 +93,10 @@ export default function AddMedicine({
         embeddings: embeddings ?? undefined,
       });
       if (buckets.length) await setMedicationTimes(chosen.drugName, chosen.ndc, buckets);
+      if (share) {
+        // Best-effort, in the background: never blocks or fails the setup.
+        contributePhoto(front, back, chosen.label).catch((err) => console.error("Sharing the photo failed (non-fatal):", err));
+      }
       vibrate([60, 40, 60]);
       setAdded((a) => [...a, chosen.drugName]);
       setStep("done");
@@ -183,6 +190,7 @@ export default function AddMedicine({
                       onClick={() =>
                         choose({
                           drugName: m.drug_name || `NDC ${m.ndc || m.label}`,
+                          label: m.label,
                           ndc: m.ndc ?? undefined,
                           imprint: m.imprint ?? undefined,
                           color: m.color ?? undefined,
@@ -208,6 +216,7 @@ export default function AddMedicine({
               onSelect={(r: SearchResult) =>
                 choose({
                   drugName: r.name || `NDC ${r.ndc || r.label}`,
+                  label: r.label,
                   ndc: r.ndc ?? undefined,
                   imprint: r.imprint ?? undefined,
                   color: r.color ?? undefined,
@@ -227,6 +236,13 @@ export default function AddMedicine({
           {header(3, `When do you take ${chosen.drugName}?`)}
           {error && <p className="text-sm text-red-800 bg-red-50 border border-red-200 rounded-xl p-3">{error}</p>}
           <TimePicker initial={[]} saveLabel={saving ? "Saving…" : "Save this medicine"} onSave={(b) => save(b)} />
+          <label className="flex items-start gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+            <input type="checkbox" checked={share} onChange={(e) => setShare(e.target.checked)} className="mt-1 w-6 h-6 shrink-0" />
+            <span className="text-sm text-slate-700">
+              <strong>Share this pill&apos;s photo</strong> to help the app recognize {chosen.drugName} for everyone. Only the
+              photo and the medicine are shared, never your name or your other medicines.
+            </span>
+          </label>
           <button
             onClick={() => save([])}
             disabled={saving}

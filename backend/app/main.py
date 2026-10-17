@@ -33,7 +33,7 @@ from collections import defaultdict
 
 from drug_names import DrugNameLookup, color_agreement, dedupe_pills, display_ndc, ndc_from_ref_path, shape_agreement
 from pill_groups import PillGroups
-from pill_features import FDA_COLORS, FDA_SHAPES, analyze as analyze_pill
+from pill_features import FDA_COLORS, FDA_SHAPES, analyze as analyze_pill, judge_pill_photo
 from imprint_match import ocr_engine, read_imprint_text, score_imprint_match, warm_up_ocr
 from imprint_vision import read_imprint_with_vision, vision_available
 from reference_images import ReferenceImageStore, map_to_zip_path
@@ -87,6 +87,7 @@ async def lifespan(app: FastAPI):
         label_meta_path=settings.label_meta_path,
     )
     _load_photo_gallery(state["classifier"], settings)
+    _load_contributions(state["classifier"], settings)
     try:
         state["ref_store"] = ReferenceImageStore(settings.dataset_zip_path)
     except (FileNotFoundError, zipfile.BadZipFile):
@@ -162,6 +163,29 @@ def _load_photo_gallery(clf: DinoV2PillClassifier, settings) -> None:
         print(f"[startup] WARNING: couldn't load {path} ({e!r}) -- continuing without it.")
 
 
+def _load_contributions(clf: DinoV2PillClassifier, settings) -> None:
+    """Shared pill photos from earlier runs that passed the photo check."""
+    d = settings.contributions_dir
+    if not d.is_dir():
+        return
+    sig, n, stale = model_signature(clf), 0, 0
+    for meta in sorted(d.glob("*.json")):
+        try:
+            rec = json.loads(meta.read_text())
+            if not rec.get("accepted"):
+                continue
+            if rec.get("model_signature") != sig:
+                stale += 1
+                continue
+            emb = torch.from_numpy(np.load(meta.with_suffix(".npy")))
+            n += clf.add_to_gallery(emb, [rec["label"]] * len(emb), [f"contrib/{meta.stem}.jpg"] * len(emb)) > 0
+        except Exception as e:  # one bad record must not stop the server
+            print(f"[startup] skipped contribution {meta.name}: {e!r}")
+    if n or stale:
+        print(f"[startup] Added {n} shared pill photos to the reference gallery"
+              + (f" ({stale} made with another model version were skipped)" if stale else "") + ".")
+
+
 def model_signature(clf: DinoV2PillClassifier) -> str:
     """Identifies the model + gallery an embedding file was made with, so
     embeddings from another model version are never mixed in."""
@@ -209,6 +233,15 @@ def _build_thumbnail_maps(settings) -> None:
     # exactly that pill, used when nothing better exists.
     for label, record_id in _confirmed_photos(settings):
         offer(label, 4, "confirmed", record_id)
+    # Photos people shared when setting up a medicine (passed the photo check).
+    if settings.contributions_dir.is_dir():
+        for meta in sorted(settings.contributions_dir.glob("*.json")):
+            try:
+                rec = json.loads(meta.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if rec.get("accepted") and (meta.with_suffix(".jpg")).exists():
+                offer(rec["label"], 4, "contrib", meta.stem)
     state["photo_by_group"] = {g: (how, value) for g, (_, how, value) in best.items()}
 
     package: dict[str, tuple[str, str]] = {}
@@ -286,7 +319,7 @@ _hits: dict[str, list[float]] = defaultdict(list)
 @app.middleware("http")
 async def rate_limit(request, call_next):
     """Simple per-device limit on the expensive endpoints."""
-    if request.method == "POST" and request.url.path in ("/api/predict", "/api/read-imprint", "/api/embed"):
+    if request.method == "POST" and request.url.path in ("/api/predict", "/api/read-imprint", "/api/embed", "/api/contribute"):
         who = (request.headers.get("cf-connecting-ip")
                or request.headers.get("x-forwarded-for", "").split(",")[0].strip()
                or (request.client.host if request.client else "?"))
@@ -368,6 +401,8 @@ def _resolve_thumbnail(label: str) -> tuple[str | None, str | None]:
             return f"/api/thumbnail?label={quote(value)}&kind={how}", "pill_photo"
         if how == "confirmed":
             return f"/api/confirmed-photo?id={quote(value)}", "pill_photo"
+        if how == "contrib":
+            return f"/api/confirmed-photo?id={quote(value)}&shared=1", "pill_photo"
         return f"/api/thumbnail?label={quote(value)}&kind=pill", "pill_photo"
     for kind in ("package", "legacy"):
         if _thumbnail_file(label, kind).exists():
@@ -690,12 +725,74 @@ async def feedback(
     return {"status": "recorded"}
 
 
+@app.post("/api/contribute")
+async def contribute(
+    file: UploadFile = File(...),
+    file_back: UploadFile = File(None),
+    label: str = Form(..., max_length=80),
+):
+    """A pill photo someone chose to share while setting up a medicine
+    (the medicine they picked from the catalog; no names or other info).
+    It is checked against the FDA record for that pill (color, shape, a
+    clean pill outline -- pill_features.judge_pill_photo) AND the model must
+    rank that pill among its top matches for the photo; if both pass, it
+    joins the reference gallery and becomes the pill's thumbnail for
+    everyone right away. Otherwise it is kept for review only."""
+    clf: DinoV2PillClassifier | None = state["classifier"]
+    names: DrugNameLookup | None = state.get("drug_names")
+    if clf is None or names is None:
+        raise HTTPException(status_code=503, detail="Model is still loading; try again shortly.")
+    if not _LABEL_RE.match(label) or label not in _known_labels(clf):
+        raise HTTPException(status_code=400, detail="Unknown pill.")
+    front = await _read_image(file)
+    images = [front] + ([await _read_image(file_back)] if file_back is not None else [])
+    info = names.display_info(label)
+    ok, reason = judge_pill_photo(front, info.get("color") if info else None, info.get("shape") if info else None)
+    emb = clf.embed_images(images)
+    if ok:
+        # The model must agree too: this pill (any listing of it) among its top
+        # matches for the photo. Color/shape alone can't tell two white round
+        # pills apart, and one mislabeled photo would mislead everyone.
+        top = clf.predict_topk_from_embeddings(emb, k=_CONTRIB_AGREE_TOPK)
+        g = names.groups.group_of.get(label) if names.groups is not None else None
+        agree = any(p.label == label or (g is not None and names.groups.group_of.get(p.label) == g) for p in top)
+        if not agree:
+            ok, reason = False, f"the model doesn't place this pill in its top {_CONTRIB_AGREE_TOPK} for the photo (kept for review)"
+    settings = get_settings()
+    settings.contributions_dir.mkdir(parents=True, exist_ok=True)
+    record_id = f"{int(time.time())}_{uuid.uuid4().hex}"
+    base = settings.contributions_dir / record_id
+    front.save(base.with_suffix(".jpg"), "JPEG", quality=90)
+    np.save(base.with_suffix(".npy"), emb.cpu().numpy())
+    base.with_suffix(".json").write_text(json.dumps({
+        "label": label, "accepted": ok, "reason": reason, "timestamp": time.time(),
+        "model_signature": model_signature(clf),
+    }, indent=2))
+    if ok:
+        clf.add_to_gallery(emb, [label] * len(images), [f"contrib/{record_id}.jpg"] * len(images))
+        g = names.groups.group_of.get(label) if names.groups is not None else None
+        photos = state.setdefault("photo_by_group", {})
+        if g is not None and g not in photos:
+            photos[g] = ("contrib", record_id)
+    return {"accepted": ok, "reason": reason}
+
+
+_CONTRIB_AGREE_TOPK = 30
+
+
+def _known_labels(clf: DinoV2PillClassifier) -> set[str]:
+    if "_known_labels" not in state:
+        state["_known_labels"] = {str(l) for l in clf.label_strings}
+    return state["_known_labels"]
+
+
 @app.get("/api/confirmed-photo")
-def confirmed_photo(id: str = Query(...)):
-    """A user-confirmed scan photo used as a pill's thumbnail."""
+def confirmed_photo(id: str = Query(...), shared: bool = Query(False)):
+    """A user-confirmed scan photo (or a shared setup photo) used as a pill's thumbnail."""
     if not _RECORD_RE.match(id):
         raise HTTPException(status_code=400, detail="Invalid id.")
-    path = get_settings().feedback_dir / f"{id}.jpg"
+    settings = get_settings()
+    path = (settings.contributions_dir if shared else settings.feedback_dir) / f"{id}.jpg"
     if not path.exists():
         raise HTTPException(status_code=404, detail="Photo not found.")
     return Response(content=path.read_bytes(), media_type="image/jpeg",

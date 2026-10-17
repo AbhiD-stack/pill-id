@@ -40,7 +40,7 @@ export function scoreMyPills(queryEmbeddings: number[][], pills: ReferencePill[]
   const scored: MyPillMatch[] = [];
   for (const pill of pills) {
     if (!pill.embeddings || pill.embeddings.length === 0) continue;
-    const refs = pill.embeddings.map(normalize);
+    const refs = [...pill.embeddings, ...(pill.learnedEmbeddings ?? [])].map(normalize);
     const perSide = queries.map((q) => Math.max(...refs.map((r) => dot(q, r))));
     scored.push({ pill, score: perSide.reduce((a, b) => a + b, 0) / perSide.length });
   }
@@ -79,6 +79,15 @@ export function judgeMyPillMatch(ranked: MyPillMatch[], galleryTopScore: number)
 export const MY_PILLS = { REJECT: 0.65, MATCH: 0.85, MARGIN: 0.05 };
 
 export type MedMatch = { key: string; pill: ReferencePill; score: number };
+
+export const MAX_LEARNED = 8;
+
+// The pill with this scan added to what it's matched against (only used
+// after a confident automatic match -- never on a guess or a user's pick).
+export function withLearnedScan(pill: ReferencePill, scan: number[][]): ReferencePill {
+  const learned = [...(pill.learnedEmbeddings ?? []), ...scan].slice(-MAX_LEARNED);
+  return { ...pill, learnedEmbeddings: learned };
+}
 
 // One row per medicine (a medicine may have several saved photos/pills).
 export function rankMyMedicines(queryEmbeddings: number[][], pills: ReferencePill[]): MedMatch[] {

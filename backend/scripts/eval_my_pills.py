@@ -3,6 +3,12 @@ saved photos of their own medicines -- on real phone photos?
 
     cd backend
     .venv\\Scripts\\python.exe scripts\\eval_my_pills.py
+    .venv\\Scripts\\python.exe scripts\\eval_my_pills.py --photos C:\\my_pill_photos
+
+--photos tests YOUR OWN photos instead (pills the model has never seen):
+one folder per pill, 2+ photos each (JPG or PNG; iPhone HEIC photos must be
+exported as JPG). Put "back" in the file name for photos of the back side.
+Photos don't need cropping; the pill is found automatically.
 
 Uses ePillID's phone photos (906 pills with 2+ photos). Simulates thousands
 of patients: each has N medicines set up (one phone photo of each side
@@ -45,11 +51,11 @@ from PIL import Image  # noqa: E402
 CACHE = HERE.parent / "my_pills_embeddings.npz"
 
 
-def embed_all(settings, rows, zf) -> np.ndarray:
+def embed_all(settings, rows, load, cache=CACHE) -> np.ndarray:
     # The cache is only reused if it was made with the same model + adapter.
     made_with = f"{settings.model_artifacts_dir}|{settings.lora_adapter_dir}"
-    if CACHE.exists():
-        data = np.load(CACHE, allow_pickle=True)
+    if cache.exists():
+        data = np.load(cache, allow_pickle=True)
         if list(data["paths"]) == [r["image_path"] for r in rows] and str(data.get("made_with", "")) == made_with:
             print("Using cached embeddings.")
             return data["emb"]
@@ -65,14 +71,13 @@ def embed_all(settings, rows, zf) -> np.ndarray:
                                lora_adapter_dir=st.lora_adapter_dir, label_meta_path=st.label_meta_path)
     out, t0 = [], time.time()
     for i, r in enumerate(rows, 1):
-        img = Image.open(io.BytesIO(zf.read("ePillID_data/classification_data/" + r["image_path"]))).convert("RGB")
-        out.append(clf.embed_images([img])[0].cpu().numpy())
+        out.append(clf.embed_images([load(r)])[0].cpu().numpy())
         if i % 200 == 0 or i == len(rows):
             rate = i / (time.time() - t0)
             print(f"  {i}/{len(rows)} photos embedded ({(len(rows) - i) / rate / 60:.0f} min left)")
     emb = np.stack(out).astype(np.float32)
     emb /= np.linalg.norm(emb, axis=1, keepdims=True)
-    np.savez(CACHE, emb=emb, paths=np.array([r["image_path"] for r in rows]), made_with=np.array(made_with))
+    np.savez(cache, emb=emb, paths=np.array([r["image_path"] for r in rows]), made_with=np.array(made_with))
     return emb
 
 
@@ -80,29 +85,51 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--trials", type=int, default=4000)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--photos", type=Path, default=None, help="folder with one sub-folder of photos per pill")
     args = ap.parse_args()
 
     from config import get_settings
     from drug_names import DrugNameLookup, _color_set, _shape_word
 
     settings = get_settings()
-    if not settings.dataset_zip_path.exists() or settings.dataset_zip_path.stat().st_size < 1_000_000:
-        print(f"Need the real ePillID zip at {settings.dataset_zip_path}.")
-        return 1
-    zf = zipfile.ZipFile(settings.dataset_zip_path)
-    allrows = list(csv.DictReader(io.TextIOWrapper(zf.open("ePillID_data/all_labels.csv"), encoding="utf-8")))
-    rows = [r for r in allrows if r["is_ref"] == "False"]  # phone photos only
+    if args.photos:
+        from pill_features import crop_to_pill
+
+        rows, skipped = [], []
+        for d in sorted(p for p in args.photos.iterdir() if p.is_dir()):
+            for f in sorted(d.iterdir()):
+                if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+                    rows.append({"image_path": str(f), "pilltype_id": d.name,
+                                 "is_front": "False" if "back" in f.stem.lower() else "True"})
+                elif f.is_file():
+                    skipped.append(f.name)
+        if skipped:
+            print(f"Skipped {len(skipped)} files that aren't JPG/PNG (export iPhone HEIC photos as JPG): {skipped[:5]}")
+        load = lambda r: crop_to_pill(Image.open(r["image_path"]).convert("RGB"))
+        cache = HERE.parent / "my_pills_embeddings_own.npz"
+    else:
+        if not settings.dataset_zip_path.exists() or settings.dataset_zip_path.stat().st_size < 1_000_000:
+            print(f"Need the real ePillID zip at {settings.dataset_zip_path}.")
+            return 1
+        zf = zipfile.ZipFile(settings.dataset_zip_path)
+        allrows = list(csv.DictReader(io.TextIOWrapper(zf.open("ePillID_data/all_labels.csv"), encoding="utf-8")))
+        rows = [r for r in allrows if r["is_ref"] == "False"]  # phone photos only
+        load = lambda r: Image.open(io.BytesIO(zf.read("ePillID_data/classification_data/" + r["image_path"]))).convert("RGB")
+        cache = CACHE
     by_pill: dict[str, list[int]] = defaultdict(list)
     for i, r in enumerate(rows):
         by_pill[r["pilltype_id"]].append(i)
     pills = [p for p, idx in by_pill.items() if len(idx) >= 2]
     print(f"{len(rows)} phone photos of {len(by_pill)} pills; {len(pills)} have 2+ photos.")
-    emb = embed_all(settings, rows, zf)
+    if len(pills) < 3:
+        print("Need at least 3 pills with 2+ photos each.")
+        return 1
+    emb = embed_all(settings, rows, load, cache)
 
     # Appearance (FDA color + shape) to build look-alike households.
     names = DrugNameLookup()
     look: dict[str, tuple] = {}
-    for p in pills:
+    for p in pills if not args.photos else []:
         a, b = p.split("-")[:2]
         info = names.lookup_by_label(f"{a.zfill(5)}-{b.zfill(4)}")
         if info and info.get("color") and info.get("shape"):
@@ -132,7 +159,7 @@ def main() -> int:
     genuine, intruder = [], []  # (best score, margin, best is right)
     for kind in ("normal", "lookalike"):
         for _ in range(args.trials):
-            n = rng.choice([5, 8, 12])
+            n = min(rng.choice([5, 8, 12]), len(pills) - 1)  # someone else's pill must exist
             if kind == "lookalike":
                 groups = [g for g in alike.values() if len(g) >= 2]
                 if not groups:
@@ -159,6 +186,8 @@ def main() -> int:
     print("\n=== My Pills on real phone photos ===")
     for kind in ("normal", "lookalike"):
         sel = [ok for _s, _m, ok, k in genuine if k == kind]
+        if not sel:
+            continue
         print(f"  Right medicine ranked first ({kind} households): {np.mean(sel):.1%}  ({len(sel)} scans)")
 
     # Choose thresholds: confident answers ("This is your X") must be wrong

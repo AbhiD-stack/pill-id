@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-const KEY = "pillid.welcomed.v1";
+const KEY = "pillid.welcomed.v2"; // bump when what we say about data changes
 
 // Shown once per device: what the app is, its limits, and what happens to
 // photos. Plain words, large text.
@@ -52,6 +52,7 @@ export default function WelcomeNotice() {
             <li>Your medicine list, reminders and saved photos stay on this phone.</li>
             <li>A pill photo is sent to our server only to identify it.</li>
             <li>When you tell us which pill it was, that photo is kept to improve matching.</li>
+            <li>When you set up a medicine you can choose to share its pill photo (without your name) so the app recognizes that pill for everyone.</li>
             <li>We never ask for your name, email or account.</li>
           </ul>
         </div>

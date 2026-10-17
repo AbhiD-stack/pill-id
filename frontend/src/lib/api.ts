@@ -312,6 +312,27 @@ export async function embedCanvases(front: HTMLCanvasElement, back?: HTMLCanvasE
   return ((await response.json()) as { embeddings: number[][] }).embeddings;
 }
 
+// Share a medicine's pill photo (no name or other personal info) so the app
+// can recognize that pill for everyone. The server checks it against the
+// FDA record before using it.
+export async function contributePhoto(
+  front: HTMLCanvasElement,
+  back: HTMLCanvasElement | null,
+  label: string
+): Promise<{ accepted: boolean; reason: string }> {
+  const formData = new FormData();
+  formData.append("file", await canvasToFile(front));
+  if (back) formData.append("file_back", await canvasToFile(back));
+  formData.append("label", label);
+  const response = await fetch(`${apiBase}/api/contribute`, {
+    method: "POST",
+    body: formData,
+    headers: { "ngrok-skip-browser-warning": "true" },
+  });
+  if (!response.ok) throw await apiError(response, "Sharing the photo");
+  return response.json();
+}
+
 // Embeddings for a photo saved to "My Pills" before scans returned them.
 export async function embedPhoto(photoDataUrl: string): Promise<number[][]> {
   const blob = await (await fetch(photoDataUrl)).blob();

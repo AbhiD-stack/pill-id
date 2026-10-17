@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # Real pill photos from drug labels, embedded with the model and added
     # to the reference gallery at startup (scripts/build_photo_gallery.py).
     photo_gallery_path: Path = Path(__file__).resolve().parent / "data" / "photo_gallery.pt"
+    # Pill photos people chose to share when setting up a medicine (no
+    # names). Ones that pass the photo check join the reference gallery and
+    # become thumbnails for everyone.
+    contributions_dir: Path = REPO_ROOT / "contributions"
     # The built web app (`npm run build:static` in frontend/). When present,
     # the backend serves it too, so the whole app runs from one address.
     frontend_dir: Path = REPO_ROOT / "frontend" / "out"

@@ -295,6 +295,27 @@ def analyze(image: Image.Image) -> Optional[PillFeatures]:
                         debug={**cdbg, **sdbg, "fg_share": round(float(fg.mean()), 2)})
 
 
+def crop_to_pill(image: Image.Image, margin: float = 0.3) -> Image.Image:
+    """The pill and some background around it -- like the app's crop box --
+    for photos taken without cropping. Unchanged if no pill is found."""
+    if cv2 is None:
+        return image
+    cv2.setRNGSeed(0)
+    small = image.convert("RGB")
+    small.thumbnail((256, 256))
+    fg = _segment(np.asarray(small))
+    if fg is None:
+        return image
+    ys, xs = np.where(fg)
+    sx, sy = image.width / small.width, image.height / small.height
+    x0, x1, y0, y1 = xs.min() * sx, (xs.max() + 1) * sx, ys.min() * sy, (ys.max() + 1) * sy
+    side = max(x1 - x0, y1 - y0) * (1 + 2 * margin)
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    box = (int(max(0, cx - side / 2)), int(max(0, cy - side / 2)),
+           int(min(image.width, cx + side / 2)), int(min(image.height, cy + side / 2)))
+    return image.crop(box)
+
+
 def photo_matches_record(image: Image.Image, fda_color: Optional[str]) -> Optional[bool]:
     """Could this photo show a pill with this FDA color? False only when no
     sizable part of the pill has that color or a commonly confused one (on

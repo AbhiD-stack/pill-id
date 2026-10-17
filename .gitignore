@@ -244,3 +244,6 @@ backend/app/data/photo_gallery.pt
 backend/photo_gallery_rejected.txt
 backend/eval_results.csv
 backend/my_pills_embeddings.npz
+# pill photos people shared when setting up a medicine
+contributions/
+backend/my_pills_embeddings_own.npz
