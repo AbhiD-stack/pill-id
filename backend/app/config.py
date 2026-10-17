@@ -127,4 +127,13 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    s = Settings()
+    # The V3 model only works with its LoRA adapter (see lora_adapter_dir).
+    # When none is configured, use the one shipped next to the model files,
+    # so the server and every script apply it without anyone setting
+    # LORA_ADAPTER_DIR -- forgetting it silently gave wrong matches.
+    if s.lora_adapter_dir is None:
+        candidate = s.model_artifacts_dir / "dinov2_projection_head" / "lora_adapter"
+        if candidate.is_dir():
+            s.lora_adapter_dir = candidate
+    return s

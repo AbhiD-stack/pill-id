@@ -46,18 +46,20 @@ CACHE = HERE.parent / "my_pills_embeddings.npz"
 
 
 def embed_all(settings, rows, zf) -> np.ndarray:
+    # The cache is only reused if it was made with the same model + adapter.
+    made_with = f"{settings.model_artifacts_dir}|{settings.lora_adapter_dir}"
     if CACHE.exists():
         data = np.load(CACHE, allow_pickle=True)
-        if list(data["paths"]) == [r["image_path"] for r in rows]:
+        if list(data["paths"]) == [r["image_path"] for r in rows] and str(data.get("made_with", "")) == made_with:
             print("Using cached embeddings.")
             return data["emb"]
-    default_lora = HERE.parent.parent / "dinov2_projection_head" / "lora_adapter"
-    if not os.environ.get("LORA_ADAPTER_DIR") and default_lora.is_dir():
-        os.environ["LORA_ADAPTER_DIR"] = str(default_lora)
     from classifier import DinoV2PillClassifier
     from config import get_settings
 
     st = get_settings()
+    if st.lora_adapter_dir is None:
+        print("WARNING: no LoRA adapter found -- V3 needs it. Expected dinov2_projection_head/lora_adapter "
+              "next to the model files, or set LORA_ADAPTER_DIR.")
     print("Loading the model exactly as the server does...")
     clf = DinoV2PillClassifier(model_dir=st.model_artifacts_dir, device=st.device,
                                lora_adapter_dir=st.lora_adapter_dir, label_meta_path=st.label_meta_path)
@@ -70,7 +72,7 @@ def embed_all(settings, rows, zf) -> np.ndarray:
             print(f"  {i}/{len(rows)} photos embedded ({(len(rows) - i) / rate / 60:.0f} min left)")
     emb = np.stack(out).astype(np.float32)
     emb /= np.linalg.norm(emb, axis=1, keepdims=True)
-    np.savez(CACHE, emb=emb, paths=np.array([r["image_path"] for r in rows]))
+    np.savez(CACHE, emb=emb, paths=np.array([r["image_path"] for r in rows]), made_with=np.array(made_with))
     return emb
 
 
