@@ -7,10 +7,15 @@ How Supplied). This script, for every pill that has no real photo yet:
   1. asks NIH RxNav for the NDC's DailyMed label id (SPL set id),
   2. lists every image in that label (DailyMed API),
   3. skips images whose names say package/carton/structure/etc.,
-  4. downloads the rest and scores how pill-photo-like each one is
-     (same scorer as collect_thumbnails.py),
-  5. keeps the best image if it scores above --min-score.
-Free, no keys. Resumable (downloads are cached). Run LOCALLY:
+  4. downloads the rest, and
+  5. keeps the first image (most photo-like first) that passes the pixel
+     check in app/pill_features.py: one clean pill outline on a plain
+     background, little printed detail, and a color AND shape that agree
+     with the FDA record for that pill.
+(An earlier version asked the recognition model instead; it turned out to
+separate image SOURCES -- NIH vs DailyMed -- not pills vs boxes, and kept
+only 97 of ~10,600. Rerunning this script redoes those.)
+Free, no keys, no model needed. Resumable (downloads are cached). Run LOCALLY:
 
     cd backend
     python scripts/fetch_label_pill_photos.py --probe 60     # preview + yield
@@ -20,7 +25,8 @@ Free, no keys. Resumable (downloads are cached). Run LOCALLY:
 --probe writes backend/label_photo_preview.html: open it and check that the
 images marked as picked are really pills, and that the score cutoff looks
 right. Output: app/data/thumbnails/label_pill/{label}.jpg -- the backend
-uses them (after C3PI and ePillID photos) on restart.
+uses them (after C3PI and ePillID photos) on restart. A full run also
+writes backend/label_photo_picks.html: 150 random picks to look over.
 """
 from __future__ import annotations
 
@@ -49,6 +55,9 @@ TODO = HERE / "pills_without_photo.json"
 CACHE = BACKEND / "app" / "data" / "label_image_cache"
 OUT_DIR = BACKEND / "app" / "data" / "thumbnails" / "label_pill"
 PREVIEW = BACKEND / "label_photo_preview.html"
+PICKS = BACKEND / "label_photo_picks.html"
+JUDGE_VERSION = 2  # pixel check; results from older judges are redone
+sys.path.insert(0, str(BACKEND / "app"))
 RXNAV = os.environ.get("RXNAV_BASE", "https://rxnav.nlm.nih.gov/REST")
 DAILYMED = os.environ.get("DAILYMED_BASE", "https://dailymed.nlm.nih.gov/dailymed/services/v2")
 
@@ -145,12 +154,15 @@ def _download(setid: str, m: dict) -> Path | None:
     return path
 
 
-def fetch_candidates(group: dict) -> dict:
-    """Network part (runs in worker threads): the label's images that could
-    be a pill photo, best rule-based score first."""
+def fetch_candidates(group: dict, look: tuple) -> dict:
+    """Runs in worker threads: the label's images that could be a pill
+    photo (best rule-based score first), each checked against this pill's
+    FDA color/shape; the first that passes is chosen."""
+    import pill_features
+
     setid = spl_set_id(group["ndcs"])
     if not setid:
-        return {"status": "no_label", "candidates": []}
+        return {"status": "no_label", "candidates": [], "chosen": None}
     scored = []
     for m in label_images(setid):
         p = _download(setid, m)
@@ -159,74 +171,43 @@ def fetch_candidates(group: dict) -> dict:
             if s > REJECT:  # line art / blank: never a pill photo
                 scored.append((s, str(p)))
     scored.sort(reverse=True)
-    return {"status": "ok", "setid": setid, "candidates": scored[:6]}
+    cands, chosen = [], None
+    for s, p in scored[:6]:
+        try:
+            ok, why = pill_features.judge_pill_photo(Image.open(p), look[0], look[1])
+        except Exception as e:  # an unreadable image is just skipped
+            ok, why = False, f"unreadable ({e.__class__.__name__})"
+        cands.append((s, p, ok, why))
+        if ok and chosen is None:
+            chosen = p
+    return {"status": "ok", "setid": setid, "candidates": cands, "chosen": chosen}
 
 
-class PhotoJudge:
-    """Recognizes real pill photos with the pill model itself: an image whose
-    nearest gallery neighbors are mostly real pill photos (ePillID / C3PI)
-    rather than DailyMed package art is a pill photo. On the real gallery
-    this catches 99.7% of pill photos while flagging <1% of package images
-    (the rule-based scorer misses multi-pill shots, colored backgrounds,
-    etc.). Loads the model exactly like the server."""
-
-    K = 15
-    THRESHOLD = 0.5
-
-    def __init__(self):
-        import torch
-
-        app = BACKEND / "app"
-        sys.path.insert(0, str(app))
-        os.chdir(app)  # same .env/settings as `uvicorn main:app`
-        default_lora = BACKEND.parent / "dinov2_projection_head" / "lora_adapter"
-        if not os.environ.get("LORA_ADAPTER_DIR") and default_lora.is_dir():
-            os.environ["LORA_ADAPTER_DIR"] = str(default_lora)
-        from classifier import DinoV2PillClassifier
-        from config import get_settings
-
-        st = get_settings()
-        self.torch = torch
-        self.clf = DinoV2PillClassifier(model_dir=st.model_artifacts_dir, device=st.device,
-                                        lora_adapter_dir=st.lora_adapter_dir, label_meta_path=st.label_meta_path)
-        dev = self.clf.ref_embeddings.device
-        self.photo = torch.tensor(
-            ["ePillID_data" in str(p) or "notebook6b49fb1258" in str(p) or "rximage" in str(p) for p in self.clf.ref_abs_paths],
-            device=dev,
-        )
-        self.index = {str(l): i for i, l in enumerate(self.clf.label_strings)}
-
-    def photo_fractions(self, paths: list[str], own_labels: list[str]) -> list[float]:
-        torch = self.torch
-        images = [Image.open(p).convert("RGB") for p in paths]
-        with torch.no_grad():
-            sims = self.clf.embed_images(images) @ self.clf.ref_embeddings.T
-            own = [self.index[l] for l in own_labels if l in self.index]
-            if own:  # the pill's own gallery images don't count as neighbors
-                sims[:, torch.isin(self.clf.ref_label_indices, torch.tensor(own, device=sims.device))] = -9
-            top = sims.topk(self.K, dim=1).indices
-            return self.photo[top].float().mean(1).tolist()
-
-
-def pick(cands: list[tuple[float, str]], fracs: list[float] | None, min_score: float):
-    """(path, photo_fraction or None) of the image to use, or None."""
-    if fracs is None:
-        return (cands[0][1], None) if cands and cands[0][0] >= min_score else None
-    ok = [(f, s, p) for (s, p), f in zip(cands, fracs) if f >= PhotoJudge.THRESHOLD]
-    if not ok:
-        return None
-    f, s, p = max(ok)
-    return p, f
+def fda_look(group: dict, names) -> tuple:
+    """(FDA color, FDA shape) on record for any listing of this pill."""
+    color = shape = None
+    for l in list(group["labels"]) + list(group["ndcs"]):
+        info = names.lookup_by_label(l) or names._table.get(l)
+        if info:
+            color = color or info.get("color")
+            shape = shape or info.get("shape")
+    return color, shape
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--probe", type=int, default=0, help="only N random pills, and write an HTML preview")
-    ap.add_argument("--min-score", type=float, default=1.0, help="rule-based cutoff, used only with --no-model")
-    ap.add_argument("--no-model", action="store_true", help="judge photos with the rule-based scorer only (no model)")
     ap.add_argument("--workers", type=int, default=6)
     args = ap.parse_args()
 
+    import pill_features
+    from drug_names import DrugNameLookup
+
+    if not pill_features.available():
+        print("OpenCV is missing, so photos can't be checked. Run this with the backend's Python:")
+        print("    .venv\\Scripts\\python.exe scripts\\fetch_label_pill_photos.py")
+        return 1
+    names = DrugNameLookup()
     todo: dict[str, dict] = json.loads(TODO.read_text())
     # Common (priority) drugs first, so a run stopped early has done the
     # pills people are most likely to scan.
@@ -239,55 +220,47 @@ def main() -> int:
         random.seed(0)
         groups = random.sample(groups, min(args.probe, len(groups)))
     else:
-        groups = [(k, g) for k, g in groups if k not in done]
+        # Redo everything an older judge rejected; keep photos already found.
+        finished = lambda r: r.get("photo") or r.get("judge") == JUDGE_VERSION or r.get("status") == "no_label"
+        groups = [(k, g) for k, g in groups if not (k in done and finished(done[k]))]
     print(f"Looking for pill photos in the DailyMed labels of {len(groups)} pills"
-          + (f" ({len(done)} already done earlier)" if done else "") + "...")
+          + (f" ({sum(1 for r in done.values() if r.get('photo'))} found earlier are kept)" if done else "") + "...")
     print("Checking the connection...")
     if _get(f"{RXNAV}/version.json") is None or _get(f"{DAILYMED}/spls.json?pagesize=1") is None:
         print("Can't reach rxnav.nlm.nih.gov / dailymed.nlm.nih.gov -- check your internet connection.")
         return 1
 
-    judge = None
-    if not args.no_model:
-        print("Loading the pill model to recognize pill photos (stop the backend first if it's running)...")
-        try:
-            judge = PhotoJudge()
-        except Exception as e:
-            print(f"Couldn't load the model ({e!r}); using the rule-based scorer instead.")
-
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     CACHE.mkdir(parents=True, exist_ok=True)
-    preview_rows, found, labels_found = [], 0, 0
+    rows, found, labels_found, no_record = [], 0, 0, 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(fetch_candidates, g): (key, g) for key, g in groups}
+        futures = {}
+        for key, g in groups:
+            look = fda_look(g, names)
+            no_record += look[0] is None
+            futures[pool.submit(fetch_candidates, g, look)] = (key, g, look)
         for i, fut in enumerate(as_completed(futures), 1):
-            key, g = futures[fut]
+            key, g, look = futures[fut]
             try:
                 res = fut.result()
             except Exception as e:  # one bad label shouldn't stop the run
-                res = {"status": f"error {e!r}", "candidates": []}
-            cands = res["candidates"]
+                res = {"status": f"error {e!r}", "candidates": [], "chosen": None}
             labels_found += res["status"] == "ok"
-            fracs = None
-            if judge is not None and cands:
-                try:
-                    fracs = judge.photo_fractions([p for _, p in cands], g["labels"])
-                except Exception as e:
-                    print(f"  model check failed for {g['labels'][0]}: {e!r}")
-            chosen = pick(cands, fracs, args.min_score) if (judge is None or fracs is not None) else None
-            if args.probe:
-                preview_rows.append((g, cands, fracs, chosen))
-            elif chosen:
+            chosen = res["chosen"]
+            if chosen and not args.probe:
                 label = next((l for l in g["labels"] if re.match(r"^[A-Za-z0-9._-]+$", l)), None)
-                if label:
-                    try:  # real JPEG, whatever the label stored; written now so stopping early keeps it
-                        Image.open(chosen[0]).convert("RGB").save(OUT_DIR / f"{label}.jpg", "JPEG", quality=90)
-                    except Exception as e:
-                        print(f"  skipped unreadable image {Path(chosen[0]).name}: {e!r}")
-                        chosen = None
+                try:  # real JPEG, whatever the label stored; written now so stopping early keeps it
+                    if label is None:
+                        raise ValueError("no usable file name")
+                    Image.open(chosen).convert("RGB").save(OUT_DIR / f"{label}.jpg", "JPEG", quality=90)
+                except Exception as e:
+                    print(f"  skipped {Path(chosen).name}: {e!r}")
+                    chosen = None
             found += bool(chosen)
+            rows.append((g, look, res["candidates"], chosen))
             if not args.probe:
-                done[key] = {"status": res["status"], "photo": bool(chosen)}
+                done[key] = {"status": res["status"], "photo": bool(chosen), "judge": JUDGE_VERSION,
+                             "setid": res.get("setid")}
                 if i % 50 == 0:
                     done_path.write_text(json.dumps(done))
             if i % 100 == 0 or i == len(groups):
@@ -295,29 +268,38 @@ def main() -> int:
     if not args.probe:
         done_path.write_text(json.dumps(done))
 
-    how = "the model" if judge else f"the rule-based score >= {args.min_score}"
-    print(f"\nDailyMed label found for {labels_found}/{len(groups)} pills; {found} have a pill photo (judged by {how}).")
+    total = sum(1 for r in done.values() if r.get("photo")) if not args.probe else found
+    print(f"\nDailyMed label found for {labels_found}/{len(groups)} pills; {found} new pill photos"
+          + (f" ({total} in total)" if not args.probe else "") + ".")
+    if no_record:
+        print(f"({no_record} pills have no FDA color on record, so a photo can't be checked and none is used.)")
 
-    if args.probe:
-        rows = []
-        for g, cands, fracs, chosen in sorted(preview_rows, key=lambda r: not r[3]):
-            cells = []
-            for j, (s, p) in enumerate(cands):
-                picked = bool(chosen) and chosen[0] == p
-                border = "4px solid #16a34a" if picked else "1px solid #ccc"
-                tag = f"score {s:.2f}" + (f" · model {fracs[j]:.0%} photo" if fracs else "")
-                cells.append(
-                    f'<div style="display:inline-block;margin:4px;text-align:center;font:11px sans-serif">'
-                    f'<img src="{Path(p).resolve().as_uri()}" style="width:130px;height:130px;object-fit:contain;border:{border}"><br>'
-                    f"{html.escape(tag)}</div>"
-                )
-            rows.append(f"<h3 style='font:14px sans-serif'>{html.escape(g['labels'][0])}</h3>"
-                        + ("".join(cells) or "<p style='font:12px sans-serif'>no candidate images</p>") + "<hr>")
-        PREVIEW.write_text("<html><body>" + "".join(rows) + "</body></html>", encoding="utf-8")
-        print(f"Wrote {PREVIEW} -- open it: green border = will be used as the pill photo.")
-        return 0
-    print(f"Pill photos are in {OUT_DIR}. Restart the backend to use them.")
+    picked = [r for r in rows if r[3]]
+    random.seed(1)
+    sample = rows if args.probe else random.sample(picked, min(150, len(picked)))
+    out = PREVIEW if args.probe else PICKS
+    _write_preview(out, sorted(sample, key=lambda r: not r[3]))
+    print(f"Wrote {out} -- open it and check that the pictures with a green border are pills.")
+    if not args.probe:
+        print(f"Pill photos are in {OUT_DIR}. Next: python scripts/build_photo_gallery.py, then restart the backend.")
     return 0
+
+
+def _write_preview(path: Path, rows) -> None:
+    parts = []
+    for g, look, cands, chosen in rows:
+        cells = []
+        for s, p, ok, why in cands:
+            border = "4px solid #16a34a" if p == chosen else "1px solid #ccc"
+            cells.append(
+                f'<div style="display:inline-block;margin:4px;text-align:center;font:11px sans-serif;width:140px;vertical-align:top">'
+                f'<img src="{Path(p).resolve().as_uri()}" style="width:130px;height:130px;object-fit:contain;border:{border}"><br>'
+                f"{html.escape(why)}</div>"
+            )
+        parts.append(f"<h3 style='font:14px sans-serif'>{html.escape(g['labels'][0])} "
+                     f"<span style='color:#666'>(FDA: {html.escape(str(look[0]))}, {html.escape(str(look[1]))})</span></h3>"
+                     + ("".join(cells) or "<p style='font:12px sans-serif'>no candidate images</p>") + "<hr>")
+    path.write_text("<html><body>" + "".join(parts) + "</body></html>", encoding="utf-8")
 
 
 if __name__ == "__main__":

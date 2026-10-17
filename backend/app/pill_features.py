@@ -41,6 +41,13 @@ FDA_SHAPES = ("ROUND", "OVAL", "CAPSULE", "RECTANGLE", "TRIANGLE", "SQUARE", "DI
 _PROTOTYPES = Path(__file__).resolve().parent / "data" / "color_prototypes.json"
 _KNN_K = 40
 _KNN_MIN_SHARE = 0.6
+# Limits for judge_pill_photo, each set so ~97-99% of 1,900 real NIH /
+# ePillID pill photos pass it: edge density on the object (imprints and
+# score lines stay below; text on boxes/bottles doesn't), contrast with the
+# backdrop (a diagram is the same paper as its background), black ink share.
+_MAX_INNER_EDGES = 0.08
+_MIN_CONTRAST = 20.0
+_MAX_INK = 0.06
 
 # Color pairs a camera (or the FDA's own wording) easily swaps; used only by
 # photo_matches_record, which must not reject a correct photo over them.
@@ -260,6 +267,7 @@ def analyze(image: Image.Image) -> Optional[PillFeatures]:
     pill can't be separated from the background reliably."""
     if cv2 is None:
         return None
+    cv2.setRNGSeed(0)  # GrabCut/k-means: same photo, same answer (per thread)
     img = image.convert("RGB")
     img.thumbnail((256, 256))
     rgb = _trim_letterbox(np.asarray(img))
@@ -269,6 +277,20 @@ def analyze(image: Image.Image) -> Optional[PillFeatures]:
     balanced = _white_balance(rgb, fg)
     colors, clusters, cdbg = _colors(balanced, fg)
     shape, sdbg = _shape(fg)
+    # Printed detail on the object: text and graphics on a box or bottle make
+    # many edges; a pill has at most an imprint and a score line.
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    inner = cv2.erode(fg.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1).astype(bool)
+    edges = cv2.Canny(gray, 60, 150) > 0
+    sdbg["inner_edges"] = round(float(edges[inner].mean()) if inner.any() else 0.0, 3)
+    # Does the object stand out from its backdrop (a pill), or is it the same
+    # paper with lines on it (a diagram)? And how much of it is black ink?
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).reshape(-1, 3).astype(np.float32)
+    fgm, bgm = fg.reshape(-1), ~fg.reshape(-1)
+    sdbg["contrast"] = round(float(np.linalg.norm(np.median(lab[fgm], 0) - np.median(lab[bgm], 0))) if bgm.any() else 0.0, 1)
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV).reshape(-1, 3)
+    ink = (hsv[:, 2] < 70) & (hsv[:, 1] < 70)
+    sdbg["ink"] = round(float(ink[fgm].mean()), 3)
     return PillFeatures(colors=colors, shape=shape, clusters=clusters,
                         debug={**cdbg, **sdbg, "fg_share": round(float(fg.mean()), 2)})
 
@@ -288,3 +310,47 @@ def photo_matches_record(image: Image.Image, fda_color: Optional[str]) -> Option
         return None
     near = lambda a, b: a == b or any(a in s and b in s for s in _NEAR)
     return any(share >= 0.15 and any(near(name, c) for c in fda) for share, name, _ in f.clusters)
+
+
+def judge_pill_photo(image: Image.Image, fda_color: Optional[str], fda_shape: Optional[str]
+                     ) -> tuple[bool, str]:
+    """Is this image a photo of THIS pill? Checked from the pixels alone
+    (the recognition model can't tell a manufacturer's pill photo from
+    package art -- it separates image sources, not content):
+      - one clear object on a plain background, not filling the picture,
+      - a clean pill outline (not a box: no 4-cornered rectangle unless the
+        pill itself is rectangular; little printed detail on it),
+      - its color AND shape agree with the FDA record for this pill (so a
+        photo of a different strength or a white bottle doesn't pass).
+    Returns (ok, reason)."""
+    import re
+
+    from drug_names import shape_agreement
+
+    fda = [w for w in (re.split(r"[\s(]", p.strip().upper())[0] for p in (fda_color or "").split(",")) if w in FDA_COLORS]
+    if not fda:
+        return False, "no FDA color on record to check against"
+    f = analyze(image)
+    if f is None:
+        return False, "no clear object"
+    d = f.debug
+    if not 0.03 <= d.get("fg_share", 0) <= 0.92:
+        return False, "object fills the picture (package?)"
+    if d.get("solidity", 0) < 0.9 or f.shape is None:
+        return False, "outline is not pill-like"
+    if d.get("inner_edges", 1) > _MAX_INNER_EDGES:
+        return False, "printed detail on the object (package?)"
+    if d.get("contrast", 0) < _MIN_CONTRAST:
+        return False, "object doesn't stand out from the backdrop (diagram?)"
+    if d.get("ink", 1) > _MAX_INK:
+        return False, "mostly black ink (diagram/text?)"
+    if f.shape in ("RECTANGLE", "SQUARE") and shape_agreement(f.shape, fda_shape) != 1.0:
+        return False, "box-shaped"
+    near = lambda a, b: a == b or any(a in s and b in s for s in _NEAR)
+    if not any(share >= 0.15 and any(near(name, c) for c in fda) for share, name, _ in f.clusters):
+        return False, f"color disagrees with FDA record ({fda_color})"
+    sa = shape_agreement(f.shape, fda_shape)
+    if sa is not None and sa < 0.5:
+        return False, f"shape disagrees with FDA record ({fda_shape})"
+    return True, "ok"
+
