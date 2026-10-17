@@ -130,15 +130,21 @@ def _find_media(obj) -> list[dict]:
     return found
 
 
-def label_images(setid: str) -> list[dict]:
+def label_images(setid: str, stats: dict | None = None) -> list[dict]:
     data = _get(f"{DAILYMED}/spls/{urllib.parse.quote(setid)}/media.json")
     media = _find_media(data) if data else []
     seen, out = set(), []
     for m in media:
-        if m["name"] in seen or _skip_name(m["name"]):
+        if m["name"] in seen:
             continue
         seen.add(m["name"])
+        if _skip_name(m["name"]):
+            if stats is not None:
+                stats["skipped by file name"] = stats.get("skipped by file name", 0) + 1
+            continue
         out.append(m)
+    if stats is not None:
+        stats["images in labels"] = stats.get("images in labels", 0) + len(seen)
     return out[:MAX_IMAGES_PER_LABEL]
 
 
@@ -163,14 +169,18 @@ def fetch_candidates(group: dict, look: tuple) -> dict:
     setid = spl_set_id(group["ndcs"])
     if not setid:
         return {"status": "no_label", "candidates": [], "chosen": None}
+    stats: dict = {}
     scored = []
-    for m in label_images(setid):
+    for m in label_images(setid, stats):
         p = _download(setid, m)
-        if p is not None:
-            s = score_image(str(p))
-            if s > REJECT:  # line art / blank: never a pill photo
-                scored.append((s, str(p)))
-    scored.sort(reverse=True)
+        if p is None:
+            stats["download failed"] = stats.get("download failed", 0) + 1
+            continue
+        s = score_image(str(p))
+        if s > REJECT:  # line art / blank: never a pill photo
+            scored.append((s, str(p)))
+        else:
+            stats["blank / line art"] = stats.get("blank / line art", 0) + 1
     cands, chosen = [], None
     for s, p in scored[:6]:
         try:
@@ -180,7 +190,7 @@ def fetch_candidates(group: dict, look: tuple) -> dict:
         cands.append((s, p, ok, why))
         if ok and chosen is None:
             chosen = p
-    return {"status": "ok", "setid": setid, "candidates": cands, "chosen": chosen}
+    return {"status": "ok", "setid": setid, "candidates": cands, "chosen": chosen, "stats": stats}
 
 
 def fda_look(group: dict, names) -> tuple:
@@ -233,6 +243,7 @@ def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     CACHE.mkdir(parents=True, exist_ok=True)
     rows, found, labels_found, no_record = [], 0, 0, 0
+    totals: dict = {}  # why images were not used, over the whole run
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {}
         for key, g in groups:
@@ -247,6 +258,11 @@ def main() -> int:
                 res = {"status": f"error {e!r}", "candidates": [], "chosen": None}
             labels_found += res["status"] == "ok"
             chosen = res["chosen"]
+            for k, v in res.get("stats", {}).items():
+                totals[k] = totals.get(k, 0) + v
+            for _s, _p, ok, why in res["candidates"]:
+                k = "checked: " + ("PASSED" if ok else re.sub(r" \(.*", "", why))
+                totals[k] = totals.get(k, 0) + 1
             if chosen and not args.probe:
                 label = next((l for l in g["labels"] if re.match(r"^[A-Za-z0-9._-]+$", l)), None)
                 try:  # real JPEG, whatever the label stored; written now so stopping early keeps it
@@ -273,6 +289,9 @@ def main() -> int:
           + (f" ({total} in total)" if not args.probe else "") + ".")
     if no_record:
         print(f"({no_record} pills have no FDA color on record, so a photo can't be checked and none is used.)")
+    print("\nWhat happened to the label images (paste this to Claude):")
+    for k, v in sorted(totals.items(), key=lambda kv: -kv[1]):
+        print(f"  {v:7d}  {k}")
 
     picked = [r for r in rows if r[3]]
     random.seed(1)
