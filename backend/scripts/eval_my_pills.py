@@ -254,7 +254,9 @@ def main() -> int:
                         continue
                     right = float(np.mean(conf_g & (G[:, 2] == 1)))
                     caught = float(np.mean(I[:, 0] < t_reject))
-                    if best is None or right > best[0]:
+                    # Most confident-and-right first; then catch as many other
+                    # people's pills as "not yours" as the false-alarm limit allows.
+                    if best is None or (right, caught) > (best[0], best[4]):
                         best = (right, float(t_reject), float(t_match), float(margin), caught, intruder)
         return best
 
