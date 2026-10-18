@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import json
 import re
+import threading
 import time
 import uuid
 import zipfile
@@ -24,6 +25,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Respo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 from PIL import Image, UnidentifiedImageError
 import numpy as np
 import torch
@@ -317,11 +319,34 @@ app = FastAPI(title="Pill ID API", version="0.1.0", lifespan=lifespan)
 _hits: dict[str, list[float]] = defaultdict(list)
 
 
+# Many people use the app at once. The slow work (the pill model, reading
+# imprints) runs in worker threads so it never holds up anyone else's
+# requests (searches, pictures, other pages keep flowing), and each model is
+# used by one request at a time -- so a pill photo someone shares is added
+# to the catalog between scans, never in the middle of another person's.
+# (One lock for all of it: the OCR reader and OpenCV's random seed are
+# shared too, and on one CPU running them side by side wouldn't be faster.)
+_model_lock = threading.Lock()
+
+
+async def _in_thread(lock: threading.Lock | None, fn, *args, **kwargs):
+    def run():
+        if lock is None:
+            return fn(*args, **kwargs)
+        with lock:
+            return fn(*args, **kwargs)
+    return await run_in_threadpool(run)
+
+
 @app.middleware("http")
 async def rate_limit(request, call_next):
-    """Simple per-device limit on the expensive endpoints."""
+    """Simple per-device limit on the expensive endpoints. Each device sends
+    its own random id (X-Device-Id): behind a tunnel every visitor can share
+    one address, and one busy user must not use up everyone's allowance."""
     if request.method == "POST" and request.url.path in ("/api/predict", "/api/read-imprint", "/api/embed", "/api/contribute", "/api/cohort"):
-        who = (request.headers.get("cf-connecting-ip")
+        device = (request.headers.get("x-device-id") or "")[:64]
+        who = ("device:" + device if re.fullmatch(r"[A-Za-z0-9-]{8,64}", device) else None) or (
+               request.headers.get("cf-connecting-ip")
                or request.headers.get("x-forwarded-for", "").split(",")[0].strip()
                or (request.client.host if request.client else "?"))
         now = time.time()
@@ -555,9 +580,13 @@ async def predict(
     color_list = [c for c in dict.fromkeys(c.strip().upper() for c in (colors or "").split(","))
                   if c in FDA_COLORS][:2] or None
     shape_word = (shape or "").strip().upper()
-    ident = identify(clf, drug_names, images, imprint=imprint,
+    def run_model():
+        r = identify(clf, drug_names, images, imprint=imprint,
                      imprint_confirmed=imprint_confirmed, rx_or_otc=rx_or_otc,
                      colors=color_list, shape=shape_word if shape_word in FDA_SHAPES else None)
+        return r, _cohort_json(clf, r.query_embs)
+
+    ident, query_cohort = await _in_thread(_model_lock, run_model)
     fused = ident.ranked[: settings.top_k]
     query_embs, ocr_text, imprint_source = ident.query_embs, ident.imprint_text, ident.imprint_source
 
@@ -623,7 +652,7 @@ async def predict(
         # closer reference than the gallery, which for most drugs only has
         # package art.
         "query_embeddings": _embeddings_json(query_embs),
-        "query_cohort": _cohort_json(clf, query_embs),
+        "query_cohort": query_cohort,
     }
 
 
@@ -644,17 +673,17 @@ async def read_imprint(file: UploadFile = File(...), file_back: UploadFile = Fil
     images = [await _read_image(file)]
     if file_back is not None:
         images.append(await _read_image(file_back))
-    sides = read_imprint_with_vision(images, get_settings().imprint_vision_model)
+    sides = await _in_thread(_model_lock, read_imprint_with_vision, images, get_settings().imprint_vision_model)
     source = "vision"
     if sides is None:
         vocab = state["drug_names"].imprint_vocab
-        reads = [read_imprint_text(img, vocab) or "" for img in images]
+        reads = await _in_thread(_model_lock, lambda: [read_imprint_text(img, vocab) or "" for img in images])
         sides = (reads[0], reads[1] if len(reads) > 1 else "")
         source = "ocr"
     # Color and shape read from the pixels (front photo), as suggestions.
     features = None
     try:
-        features = analyze_pill(images[0])
+        features = await _in_thread(_model_lock, analyze_pill, images[0])
     except Exception as e:  # never block the imprint step on this
         print(f"[read-imprint] color/shape reading failed: {e!r}")
     return {"side_1": sides[0], "side_2": sides[1], "source": source,
@@ -672,8 +701,11 @@ async def embed(file: UploadFile = File(...), file_back: UploadFile = File(None)
     images = [await _read_image(file)]
     if file_back is not None:
         images.append(await _read_image(file_back))
-    embs = clf.embed_images(images)
-    return {"embeddings": _embeddings_json(embs), "cohort": _cohort_json(clf, embs)}
+    def run_model():
+        embs = clf.embed_images(images)
+        return {"embeddings": _embeddings_json(embs), "cohort": _cohort_json(clf, embs)}
+
+    return await _in_thread(_model_lock, run_model)
 
 
 class _CohortRequest(BaseModel):
@@ -689,7 +721,8 @@ def cohort(req: _CohortRequest):
         raise HTTPException(status_code=503, detail="Model is still loading; try again shortly.")
     if not 1 <= len(req.embeddings) <= 64 or any(len(e) != clf.ref_embeddings.shape[1] for e in req.embeddings):
         raise HTTPException(status_code=400, detail="Bad embeddings.")
-    return {"cohort": _cohort_json(clf, torch.tensor(req.embeddings, dtype=torch.float32))}
+    with _model_lock:
+        return {"cohort": _cohort_json(clf, torch.tensor(req.embeddings, dtype=torch.float32))}
 
 
 _RECENT_PREDICTIONS_MAX = 200
@@ -772,13 +805,19 @@ async def contribute(
     front = await _read_image(file)
     images = [front] + ([await _read_image(file_back)] if file_back is not None else [])
     info = names.display_info(label)
-    ok, reason = judge_pill_photo(front, info.get("color") if info else None, info.get("shape") if info else None)
-    emb = clf.embed_images(images)
+    ok, reason = await _in_thread(_model_lock, judge_pill_photo, front, info.get("color") if info else None,
+                                  info.get("shape") if info else None)
+
+    def run_model():
+        emb = clf.embed_images(images)
+        top = clf.predict_topk_from_embeddings(emb, k=_CONTRIB_AGREE_TOPK) if ok else []
+        return emb, top
+
+    emb, top = await _in_thread(_model_lock, run_model)
     if ok:
         # The model must agree too: this pill (any listing of it) among its top
         # matches for the photo. Color/shape alone can't tell two white round
         # pills apart, and one mislabeled photo would mislead everyone.
-        top = clf.predict_topk_from_embeddings(emb, k=_CONTRIB_AGREE_TOPK)
         g = names.groups.group_of.get(label) if names.groups is not None else None
         agree = any(p.label == label or (g is not None and names.groups.group_of.get(p.label) == g) for p in top)
         if not agree:
@@ -794,7 +833,7 @@ async def contribute(
         "model_signature": model_signature(clf),
     }, indent=2))
     if ok:
-        clf.add_to_gallery(emb, [label] * len(images), [f"contrib/{record_id}.jpg"] * len(images))
+        await _in_thread(_model_lock, clf.add_to_gallery, emb, [label] * len(images), [f"contrib/{record_id}.jpg"] * len(images))
         g = names.groups.group_of.get(label) if names.groups is not None else None
         photos = state.setdefault("photo_by_group", {})
         if g is not None and g not in photos:

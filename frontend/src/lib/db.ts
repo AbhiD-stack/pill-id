@@ -141,7 +141,30 @@ function getDb() {
           db.createObjectStore("customDrugs", { keyPath: "id" });
         }
       },
+      // Another tab still has an older version of the app open and holds the
+      // database: tell the user (this tab waits until that one is closed).
+      blocked() {
+        window.dispatchEvent(new Event("pillid-db-blocked"));
+      },
+      // This tab is the older one and a newer version was opened elsewhere:
+      // let go of the database and reload into the new version.
+      blocking() {
+        const p = dbPromise;
+        dbPromise = null;
+        p?.then((db) => db.close());
+        window.location.reload();
+      },
+      terminated() {
+        dbPromise = null;
+      },
     });
+    dbPromise.then(
+      () => window.dispatchEvent(new Event("pillid-db-ready")),
+      (err) => {
+        console.error("Opening the on-device storage failed:", err);
+        dbPromise = null; // try again next time
+      },
+    );
   }
   return dbPromise;
 }

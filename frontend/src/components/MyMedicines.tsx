@@ -15,9 +15,18 @@ type Row = { key: string; drugName: string; ndc?: string; med: Medication | null
 export default function MyMedicines({ onAdd, onChanged }: { onAdd: () => void; onChanged?: () => void }) {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [meds, pills] = await Promise.all([getMedications(), getReferencePills()]);
+    let meds, pills;
+    try {
+      [meds, pills] = await Promise.all([getMedications(), getReferencePills()]);
+      setFailed(false);
+    } catch (err) {
+      console.error("Couldn't read the saved medicines:", err);
+      setFailed(true);
+      return;
+    }
     const byKey = new Map<string, Row>();
     for (const m of meds) byKey.set(m.key, { key: m.key, drugName: m.drugName, ndc: m.ndc, med: m, pills: [] });
     for (const p of pills) {
@@ -34,7 +43,27 @@ export default function MyMedicines({ onAdd, onChanged }: { onAdd: () => void; o
     refresh();
   }, [refresh]);
 
-  if (rows === null) return null;
+  if (rows === null) {
+    return (
+      <div className="space-y-3">
+        <h2 className="text-2xl font-bold text-slate-900">My medicines</h2>
+        {failed ? (
+          <div className="p-4 bg-red-50 border-2 border-red-300 rounded-2xl space-y-2">
+            <p className="text-base font-bold text-red-900">Couldn&apos;t open your saved medicines</p>
+            <p className="text-sm text-red-800">
+              Close other Pill ID tabs or windows and try again. If it keeps happening, check that this browser allows
+              site storage (it&apos;s blocked in some private-browsing modes).
+            </p>
+            <button onClick={refresh} className="w-full py-3 bg-white border border-red-300 text-red-800 font-bold rounded-xl">
+              Try again
+            </button>
+          </div>
+        ) : (
+          <p className="text-base text-slate-500">Loading your medicines…</p>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">

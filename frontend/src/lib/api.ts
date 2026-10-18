@@ -62,6 +62,24 @@ export type SearchResult = {
   custom?: boolean; // typed in by the user, not from the FDA list
 };
 
+// A random id for this browser, so the server's per-minute scan allowance
+// is per device (many users can arrive from the same address through a
+// tunnel). Not tied to the person; nothing else is stored with it.
+let _deviceId: string | null = null;
+function deviceId(): string {
+  if (_deviceId) return _deviceId;
+  try {
+    _deviceId = localStorage.getItem("pillid.deviceId");
+    if (!_deviceId) {
+      _deviceId = crypto.randomUUID();
+      localStorage.setItem("pillid.deviceId", _deviceId);
+    }
+  } catch {
+    _deviceId ??= crypto.randomUUID();
+  }
+  return _deviceId;
+}
+
 const apiBase = process.env.NEXT_PUBLIC_SAME_ORIGIN
   ? "" // served by the backend itself (npm run build:static)
   : (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
@@ -122,7 +140,7 @@ export async function predictPill(
     body: formData,
     headers: {
       // This tells Ngrok to shut up and just serve the data instantly!
-      "ngrok-skip-browser-warning": "true",
+      "ngrok-skip-browser-warning": "true", "X-Device-Id": deviceId(),
     },
   });
 
@@ -155,7 +173,7 @@ export async function submitFeedback(
   const response = await fetch(`${apiBase}/api/feedback`, {
     method: "POST",
     body: formData,
-    headers: { "ngrok-skip-browser-warning": "true" },
+    headers: { "ngrok-skip-browser-warning": "true", "X-Device-Id": deviceId() },
   });
   if (!response.ok) {
     throw await apiError(response, "Feedback");
@@ -177,7 +195,7 @@ export async function fetchSecureImageBlob(url: string): Promise<string> {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        "ngrok-skip-browser-warning": "true",
+        "ngrok-skip-browser-warning": "true", "X-Device-Id": deviceId(),
       },
     });
 
@@ -294,7 +312,7 @@ export async function readImprint(
   const response = await fetch(`${apiBase}/api/read-imprint`, {
     method: "POST",
     body: formData,
-    headers: { "ngrok-skip-browser-warning": "true" },
+    headers: { "ngrok-skip-browser-warning": "true", "X-Device-Id": deviceId() },
   });
   if (!response.ok) {
     throw await apiError(response, "Imprint read");
@@ -313,7 +331,7 @@ export async function embedCanvases(front: HTMLCanvasElement, back?: HTMLCanvasE
   const response = await fetch(`${apiBase}/api/embed`, {
     method: "POST",
     body: formData,
-    headers: { "ngrok-skip-browser-warning": "true" },
+    headers: { "ngrok-skip-browser-warning": "true", "X-Device-Id": deviceId() },
   });
   if (!response.ok) throw await apiError(response, "Checking the pill");
   const data = (await response.json()) as { embeddings: number[][]; cohort?: number[][] };
@@ -325,7 +343,7 @@ export async function fetchCohort(embeddings: number[][]): Promise<number[][]> {
   const response = await fetch(`${apiBase}/api/cohort`, {
     method: "POST",
     body: JSON.stringify({ embeddings }),
-    headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+    headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true", "X-Device-Id": deviceId() },
   });
   if (!response.ok) throw await apiError(response, "Preparing saved pills");
   return ((await response.json()) as { cohort: number[][] }).cohort;
@@ -346,7 +364,7 @@ export async function contributePhoto(
   const response = await fetch(`${apiBase}/api/contribute`, {
     method: "POST",
     body: formData,
-    headers: { "ngrok-skip-browser-warning": "true" },
+    headers: { "ngrok-skip-browser-warning": "true", "X-Device-Id": deviceId() },
   });
   if (!response.ok) throw await apiError(response, "Sharing the photo");
   return response.json();
@@ -360,7 +378,7 @@ export async function embedPhoto(photoDataUrl: string): Promise<number[][]> {
   const response = await fetch(`${apiBase}/api/embed`, {
     method: "POST",
     body: formData,
-    headers: { "ngrok-skip-browser-warning": "true" },
+    headers: { "ngrok-skip-browser-warning": "true", "X-Device-Id": deviceId() },
   });
   if (!response.ok) {
     throw await apiError(response, "Embed");
@@ -386,7 +404,7 @@ export async function searchByName(query: string, imprint?: string): Promise<Sea
   const params = new URLSearchParams({ q: query });
   if (imprint) params.set("imprint", imprint);
   const response = await fetch(`${apiBase}/api/search-by-name?${params.toString()}`, {
-    headers: { "ngrok-skip-browser-warning": "true" },
+    headers: { "ngrok-skip-browser-warning": "true", "X-Device-Id": deviceId() },
   });
   if (!response.ok) {
     throw await apiError(response, "Search");
@@ -411,7 +429,7 @@ export async function searchByAppearance(criteria: {
   if (criteria.scoreMarks) params.set("score_marks", criteria.scoreMarks);
 
   const response = await fetch(`${apiBase}/api/search-by-appearance?${params.toString()}`, {
-    headers: { "ngrok-skip-browser-warning": "true" },
+    headers: { "ngrok-skip-browser-warning": "true", "X-Device-Id": deviceId() },
   });
   if (!response.ok) {
     throw await apiError(response, "Search");

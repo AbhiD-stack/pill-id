@@ -47,6 +47,18 @@ export default function MainApp({ onResetSession }: MainAppProps) {
   const [interactionFlags, setInteractionFlags] = useState<InteractionFlag[]>([]);
   const [duplicateFlags, setDuplicateFlags] = useState<DuplicateIngredient[]>([]);
   const [largeText, setLargeText] = useState(false);
+  // Storage upgrade waiting on another (older) Pill ID tab or window.
+  const [dbBlocked, setDbBlocked] = useState(false);
+  useEffect(() => {
+    const on = () => setDbBlocked(true);
+    const off = () => setDbBlocked(false);
+    window.addEventListener("pillid-db-blocked", on);
+    window.addEventListener("pillid-db-ready", off);
+    return () => {
+      window.removeEventListener("pillid-db-blocked", on);
+      window.removeEventListener("pillid-db-ready", off);
+    };
+  }, []);
   const [medsVersion, setMedsVersion] = useState(0);
   const reminders = useReminders(medsVersion);
   const onMedsChanged = useCallback(() => setMedsVersion((v) => v + 1), []);
@@ -163,6 +175,16 @@ export default function MainApp({ onResetSession }: MainAppProps) {
           </button>
         </div>
       </header>
+
+      {dbBlocked && (
+        <div role="alert" className="mx-4 mt-4 p-4 rounded-2xl border-2 border-amber-400 bg-amber-50">
+          <p className="text-lg font-bold text-slate-900">Pill ID was just updated</p>
+          <p className="text-base text-slate-700 mt-1">
+            Close any other Pill ID tabs or windows (including the app on your home screen). Your medicines will show here
+            as soon as they&apos;re closed.
+          </p>
+        </div>
+      )}
 
       {reminders.due && activeTab !== "schedule" && (
         <div className={`mx-4 mt-4 p-4 rounded-2xl border-2 shadow-sm ${reminders.due.overdue ? "bg-red-50 border-red-400" : "bg-amber-50 border-amber-400"}`}>
@@ -338,13 +360,13 @@ export default function MainApp({ onResetSession }: MainAppProps) {
               ) : (
                 <div className="w-40 h-40 bg-slate-100 border border-slate-300 p-3 rounded-2xl mb-4 flex flex-col items-center justify-center text-slate-400 font-semibold text-xs shadow-inner">
                   <span className="text-3xl mb-1">🪪</span>
-                  Scan a pill first
+                  Add your medicines first
                 </div>
               )}
               <p className="text-xs text-slate-500 max-w-sm">
                 {qrDataUrl
                   ? `Encodes your ${meds.length} scheduled medication${meds.length === 1 ? "" : "s"} (name, NDC, how often and when) directly in the code — generated on this device, nothing sent to a server. Scan it to load the list elsewhere.`
-                  : "Scan this passport code to load the medication list instantly, with no server-side data persistence."}
+                  : "Once your medicines have set times, this code holds the list (names, how often and when) so a doctor or pharmacist can scan it straight off your phone. Made on this device; nothing is sent to a server."}
               </p>
             </div>
 
