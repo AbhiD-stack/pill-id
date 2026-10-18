@@ -247,3 +247,4 @@ backend/my_pills_embeddings.npz
 # pill photos people shared when setting up a medicine
 contributions/
 backend/my_pills_embeddings_own.npz
+backend/my_pills_embeddings*_cohort.npz

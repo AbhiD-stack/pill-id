@@ -74,34 +74,71 @@ export function judgeMyPillMatch(ranked: MyPillMatch[], galleryTopScore: number)
 // the safety net -- a spouse's pill or a wrong pill in the organizer must
 // not be forced onto one of the patient's medicines.
 //
-// Thresholds from backend/scripts/eval_my_pills.py on the real V3 model
-// (4,000 normal + 4,000 look-alike households of real ePillID phone photos,
-// plus other people's pills). Right medicine first: 96% (89% with a
-// look-alike in the household). With these: "This is your X" 59% of scans,
-// wrong 0.9%; "check the letters" 35%; false "not yours" 4.5%; other
-// people's pills caught 84%, wrongly confirmed 1.7%. Optimistic: V3 trained
-// on these photos. Confirmed answers also show the letters to check.
-export const MY_PILLS = { REJECT: 0.94, MATCH: 0.97, MARGIN: 0.02 };
+// Settings from backend/scripts/eval_my_pills.py on the real V3 model.
+// "raw" = plain similarity to the saved photos; "snorm" = similarity
+// normalized against how alike the photo is to pills in general (cohort
+// statistics from the server's catalog), which keeps a look-alike-of-
+// everything pill from scoring high. MODE is the one the evaluation found
+// safest; raw is used whenever a pill's statistics aren't available yet.
+//
+// raw, first run (4,000 normal + 4,000 look-alike households of real ePillID
+// phone photos): right medicine first 96% (89% with a look-alike); "This is
+// your X" 59% of scans, wrong 0.9%; others' pills wrongly confirmed 1.7%.
+// Optimistic: V3 trained on these photos. Confirmed answers also show the
+// letters to check.
+export type Thresholds = { REJECT: number; MATCH: number; MARGIN: number };
+export const MY_PILLS: { MODE: "raw" | "snorm"; PHOTOS: 1 | 2; raw: Thresholds; snorm: Thresholds } = {
+  MODE: "raw",
+  PHOTOS: 1,
+  raw: { REJECT: 0.94, MATCH: 0.97, MARGIN: 0.02 },
+  snorm: { REJECT: 0, MATCH: 0, MARGIN: 0 }, // set from eval_my_pills.py before MODE becomes "snorm"
+};
 
+export type ScanQuery = { embeddings: number[][]; cohort: number[][] | null };
 export type MedMatch = { key: string; pill: ReferencePill; score: number };
 
 export const MAX_LEARNED = 8;
 
+const hasCohort = (p: ReferencePill) =>
+  !!p.cohort && p.cohort.length === (p.embeddings?.length ?? 0) &&
+  (p.learnedCohort?.length ?? 0) === (p.learnedEmbeddings?.length ?? 0);
+
 // The pill with this scan added to what it's matched against (only used
 // after a confident automatic match -- never on a guess or a user's pick).
-export function withLearnedScan(pill: ReferencePill, scan: number[][]): ReferencePill {
-  const learned = [...(pill.learnedEmbeddings ?? []), ...scan].slice(-MAX_LEARNED);
-  return { ...pill, learnedEmbeddings: learned };
+export function withLearnedScan(pill: ReferencePill, scan: ScanQuery): ReferencePill {
+  const learned = [...(pill.learnedEmbeddings ?? []), ...scan.embeddings].slice(-MAX_LEARNED);
+  const cohort = scan.cohort && (pill.learnedCohort?.length ?? 0) === (pill.learnedEmbeddings?.length ?? 0)
+    ? [...(pill.learnedCohort ?? []), ...scan.cohort].slice(-MAX_LEARNED)
+    : undefined; // re-filled from the server later
+  return { ...pill, learnedEmbeddings: learned, learnedCohort: cohort };
 }
 
-// One row per medicine (a medicine may have several saved photos/pills).
-export function rankMyMedicines(queryEmbeddings: number[][], pills: ReferencePill[]): MedMatch[] {
+// One row per medicine (a medicine may have several saved photos/pills),
+// with the scoring mode actually used (and so which thresholds apply).
+export function rankMyMedicines(query: ScanQuery, pills: ReferencePill[]): { ranked: MedMatch[]; mode: "raw" | "snorm" } {
+  const usable = pills.filter((p) => p.embeddings && p.embeddings.length > 0);
+  const mode = MY_PILLS.MODE === "snorm" && query.cohort && usable.every(hasCohort) ? "snorm" : "raw";
+  const qs = query.embeddings.map(normalize);
   const best = new Map<string, MedMatch>();
-  for (const { pill, score } of scoreMyPills(queryEmbeddings, pills)) {
+  for (const pill of usable) {
+    const refs = [...pill.embeddings!, ...(pill.learnedEmbeddings ?? [])].map(normalize);
+    const refStats = [...(pill.cohort ?? []), ...(pill.learnedCohort ?? [])];
+    const perSide = qs.map((q, qi) =>
+      Math.max(
+        ...refs.map((r, ri) => {
+          const c = dot(q, r);
+          if (mode === "raw") return c;
+          const [qm, qsd] = query.cohort![qi];
+          const [rm, rsd] = refStats[ri];
+          return 0.5 * ((c - qm) / qsd + (c - rm) / rsd);
+        })
+      )
+    );
+    const score = perSide.reduce((a, b) => a + b, 0) / perSide.length;
     const key = `${pill.drugName.trim().toLowerCase()}|${pill.ndc || ""}`;
     if (!best.has(key) || best.get(key)!.score < score) best.set(key, { key, pill, score });
   }
-  return [...best.values()].sort((a, b) => b.score - a.score);
+  return { ranked: [...best.values()].sort((a, b) => b.score - a.score), mode };
 }
 
 export type CheckResult =
@@ -109,10 +146,10 @@ export type CheckResult =
   | { kind: "check"; options: MedMatch[] }
   | { kind: "none"; closest: MedMatch | null };
 
-export function checkMyPill(ranked: MedMatch[], t = MY_PILLS): CheckResult {
+export function checkMyPill(ranked: MedMatch[], t: Thresholds = MY_PILLS.raw): CheckResult {
   const [first, second] = ranked;
   if (!first || first.score < t.REJECT) return { kind: "none", closest: first ?? null };
-  const margin = first.score - (second ? second.score : -1);
+  const margin = first.score - (second ? second.score : -1e9);
   if (first.score >= t.MATCH && margin >= t.MARGIN) return { kind: "match", best: first };
   const options = [first];
   if (second && second.score >= t.REJECT && margin < t.MARGIN) options.push(second);

@@ -81,6 +81,26 @@ def embed_all(settings, rows, load, cache=CACHE) -> np.ndarray:
     return emb
 
 
+def cohort_all(settings, rows, emb, cache) -> np.ndarray:
+    """(n, 2) cohort mean/std of every photo vs the catalog gallery -- the
+    same statistic the server returns with each embedding."""
+    made_with = f"{settings.model_artifacts_dir}|{settings.lora_adapter_dir}"
+    path = cache.with_name(cache.stem + "_cohort.npz")
+    if path.exists():
+        data = np.load(path, allow_pickle=True)
+        if list(data["paths"]) == [r["image_path"] for r in rows] and str(data["made_with"]) == made_with:
+            return data["cohort"]
+    import torch
+    from classifier import DinoV2PillClassifier
+
+    print("Comparing every photo with the catalog (for normalized scores)...")
+    clf = DinoV2PillClassifier(model_dir=settings.model_artifacts_dir, device=settings.device,
+                               lora_adapter_dir=settings.lora_adapter_dir, label_meta_path=settings.label_meta_path)
+    stats = clf.cohort_stats(torch.from_numpy(emb)).numpy()
+    np.savez(path, cohort=stats, paths=np.array([r["image_path"] for r in rows]), made_with=np.array(made_with))
+    return stats
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--trials", type=int, default=4000)
@@ -138,25 +158,35 @@ def main() -> int:
     for p, k in look.items():
         alike[k].append(p)
 
+    cohort = cohort_all(settings, rows, emb, cache)
     rng = random.Random(args.seed)
 
     def setup(p):
-        """Saved photos for pill p (one per side when possible) and the
-        photos left over to scan."""
+        """Saved photos for pill p (one per side, as in the app's setup) and
+        the photos left over to scan -- at least 2 when possible, so a scan
+        can use both sides too."""
         idx = by_pill[p][:]
         rng.shuffle(idx)
+        n_save = 1 if len(idx) <= 3 else 2
         saved, sides = [], set()
         for i in idx:
-            side = rows[i]["is_front"]
-            if side not in sides and len(idx) - len(saved) > 1:
+            if len(saved) < n_save and rows[i]["is_front"] not in sides:
                 saved.append(i)
-                sides.add(side)
+                sides.add(rows[i]["is_front"])
+        if not saved:
+            saved = idx[:1]
         return saved, [i for i in idx if i not in saved]
 
-    def scores(query, household):
-        return sorted(((float(np.max(emb[s] @ emb[query])), p) for p, s in household.items()), reverse=True)
+    def two(photos):
+        """One scan photo, and two (other side first if there is one)."""
+        q1 = rng.choice(photos)
+        rest = [i for i in photos if i != q1]
+        other_side = [i for i in rest if rows[i]["is_front"] != rows[q1]["is_front"]]
+        q2 = [q1] + ([rng.choice(other_side or rest)] if rest else [])
+        return [q1], q2
 
-    genuine, intruder = [], []  # (best score, margin, best is right)
+    # Every simulated scan: (household, query photos (1), query photos (2), right answer or None)
+    trials = []
     for kind in ("normal", "lookalike"):
         for _ in range(args.trials):
             n = min(rng.choice([5, 8, 12]), len(pills) - 1)  # someone else's pill must exist
@@ -171,65 +201,110 @@ def main() -> int:
             household, left = {}, {}
             for p in meds:
                 household[p], left[p] = setup(p)
-            target = meds[0]
-            q = rng.choice(left[target])
-            ranked = scores(q, household)
-            margin = ranked[0][0] - (ranked[1][0] if len(ranked) > 1 else -1)
-            genuine.append((ranked[0][0], margin, ranked[0][1] == target, kind))
-            # someone else's pill, not in this household
+            q1, q2 = two(left[meds[0]])
+            trials.append((household, q1, q2, meds[0], kind))
             other = rng.choice([p for p in pills if p not in household])
-            ranked = scores(rng.choice(by_pill[other]), household)
-            intruder.append((ranked[0][0], ranked[0][0] - ranked[1][0], False, kind))
+            q1, q2 = two(by_pill[other])
+            trials.append((household, q1, q2, None, kind))
 
-    G = np.array([(s, m, ok) for s, m, ok, _ in genuine], dtype=float)
-    I = np.array([(s, m) for s, m, _ok, _ in intruder], dtype=float)
-    print("\n=== My Pills on real phone photos ===")
-    for kind in ("normal", "lookalike"):
-        sel = [ok for _s, _m, ok, k in genuine if k == kind]
-        if not sel:
-            continue
-        print(f"  Right medicine ranked first ({kind} households): {np.mean(sel):.1%}  ({len(sel)} scans)")
+    E = emb
+    MU, SD = cohort[:, 0], cohort[:, 1]
 
-    # Choose thresholds: confident answers ("This is your X") must be wrong
-    # at most 0.5% of the time, counting intruders it would wrongly confirm;
-    # among those, confirm as many correct scans as possible while still
-    # catching 90%+ of intruders as "not yours".
-    def search(max_wrong: float, min_caught: float):
+    def score(queries, saved, mode):
+        sims = E[saved] @ E[queries].T  # (saved, queries)
+        if mode == "snorm":
+            sims = 0.5 * ((sims - MU[queries][None, :]) / SD[queries][None, :]
+                          + (sims - MU[saved][:, None]) / SD[saved][:, None])
+        return float(sims.max(axis=0).mean())
+
+    def run(mode, photos):
+        G, I, kinds = [], [], []
+        for household, q1, q2, target, kind in trials:
+            q = q1 if photos == 1 else q2
+            ranked = sorted(((score(q, s, mode), p) for p, s in household.items()), reverse=True)
+            margin = ranked[0][0] - ranked[1][0]
+            if target is None:
+                I.append((ranked[0][0], margin))
+            else:
+                G.append((ranked[0][0], margin, float(ranked[0][1] == target)))
+                kinds.append(kind)
+        return np.array(G), np.array(I), kinds
+
+    def search(G, I, bar):
+        """Best thresholds meeting a safety bar: (max share of OTHER people's
+        pills confirmed as the patient's, max share of the patient's pills
+        confirmed as the WRONG one of theirs, max share of the patient's
+        pills called "not yours"). Everything in between becomes "check the
+        letters". Among settings meeting the bar: most confident-and-right."""
+        max_intruder, max_own_wrong, max_false_alarm = bar
+        allv = np.concatenate([G[:, 0], I[:, 0]])
+        grid = np.unique(np.quantile(allv, np.linspace(0.0, 1.0, 150)))
+        margins = np.unique(np.concatenate([[0.0], np.quantile(G[:, 1], [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6])]))
         best = None
-        for t_reject in np.round(np.arange(0.30, 0.95, 0.01), 2):
-            caught = float(np.mean(I[:, 0] < t_reject))
-            if caught < min_caught:
-                continue
-            for t_match in np.round(np.arange(t_reject, 0.99, 0.01), 2):
-                for margin in (0.0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.15):
+        for t_reject in grid:
+            false_alarm = float(np.mean(G[:, 0] < t_reject))
+            if false_alarm > max_false_alarm:
+                break  # grid is increasing: only gets worse
+            for t_match in grid[grid >= t_reject]:
+                for margin in margins:
                     conf_g = (G[:, 0] >= t_match) & (G[:, 1] >= margin)
-                    conf_i = (I[:, 0] >= t_match) & (I[:, 1] >= margin)
-                    wrong = (np.sum(conf_g & (G[:, 2] == 0)) + np.sum(conf_i)) / (len(G) + len(I))
-                    if wrong > max_wrong:
+                    intruder = float(np.mean((I[:, 0] >= t_match) & (I[:, 1] >= margin)))
+                    own_wrong = float(np.mean(conf_g & (G[:, 2] == 0)))
+                    if intruder > max_intruder or own_wrong > max_own_wrong:
                         continue
                     right = float(np.mean(conf_g & (G[:, 2] == 1)))
+                    caught = float(np.mean(I[:, 0] < t_reject))
                     if best is None or right > best[0]:
-                        best = (right, t_reject, t_match, margin, caught, wrong)
+                        best = (right, float(t_reject), float(t_match), float(margin), caught, intruder)
         return best
 
-    # Strictest bar first; relax only if the model can't meet it.
-    for max_wrong, min_caught in ((0.005, 0.90), (0.01, 0.85), (0.02, 0.80), (0.05, 0.70)):
-        best = search(max_wrong, min_caught)
-        if best:
-            print(f"\n  Safety bar met: at most {max_wrong:.1%} wrong confident answers, "
-                  f"at least {min_caught:.0%} of other people's pills caught.")
-            break
-    if best is None:
-        print("\nNo setting is safe enough even at 5% wrong confident answers -- the app should not "
-              "say \"This is your X\" on its own; paste this to Claude.")
-        print(f"  genuine best-score quartiles: {np.percentile(G[:, 0], [25, 50, 75]).round(3)}")
-        print(f"  intruder best-score quartiles: {np.percentile(I[:, 0], [25, 50, 75]).round(3)}")
+    # (others' pills confirmed, own pill confirmed as the wrong one, own pill called "not yours")
+    # A setting only counts as useful if at least this share of scans of the
+    # patient's own pills get a confident, correct answer (otherwise almost
+    # everything would be "check the letters").
+    MIN_USEFUL = 0.40
+    BARS = ((0.001, 0.001, 0.01), (0.0025, 0.0025, 0.02), (0.005, 0.005, 0.03), (0.01, 0.01, 0.05))
+    print("\n=== My Pills on real phone photos ===")
+    results = {}
+    for mode in ("raw", "snorm"):
+        for photos in (1, 2):
+            G, I, kinds = run(mode, photos)
+            fallback = None
+            for b, bar in enumerate(BARS):
+                best = search(G, I, bar)
+                if best and best[0] >= MIN_USEFUL:
+                    results[(mode, photos)] = (b, best, G, I, kinds)
+                    break
+                if best and fallback is None:
+                    fallback = (b, best, G, I, kinds)
+            else:
+                if fallback:  # safe, but mostly "check the letters"
+                    results[(mode, photos)] = fallback
+            name = f"{'plain' if mode == 'raw' else 'normalized'} score, {photos} photo{'s' if photos > 1 else ''}"
+            top1 = np.mean(G[:, 2])
+            if (mode, photos) in results:
+                b, best, *_ = results[(mode, photos)]
+                print(f"  {name:32} right first {top1:.1%} | safety level {b + 1} of 4 | confident & right {best[0]:.1%}")
+            else:
+                print(f"  {name:32} right first {top1:.1%} | no safe setting found")
+    if not results:
+        print("\nNo setting is safe enough -- paste this to Claude.")
         return 0
+
+    # Winner: strictest safety bar met, then most confident-and-right answers.
+    (mode, photos), (b, best, G, I, kinds) = min(results.items(), key=lambda kv: (kv[1][0], -kv[1][1][0]))
     right, t_reject, t_match, margin, caught, wrong = best
+    print(f"\n  Best: {'normalized' if mode == 'snorm' else 'plain'} score, {photos} photo(s). Safety level {b + 1} of 4 met: "
+          f"others' pills confirmed <= {BARS[b][0]:.2%}, own pill confirmed as the wrong one <= {BARS[b][1]:.2%}, "
+          f"own pill called 'not yours' <= {BARS[b][2]:.0%}.")
+    for kind in ("normal", "lookalike"):
+        sel = [g[2] for g, k in zip(G, kinds) if k == kind]
+        if sel:
+            print(f"  Right medicine ranked first ({kind} households): {np.mean(sel):.1%}  ({len(sel)} scans)")
     conf = (G[:, 0] >= t_match) & (G[:, 1] >= margin)
     rejected = G[:, 0] < t_reject
     check = ~conf & ~rejected
-    print("\n  With the recommended settings, when a patient scans one of THEIR medicines:")
+    print("\n  When a patient scans one of THEIR medicines:")
     print(f"    \"This is your X\" and it IS X:            {np.mean(conf & (G[:, 2] == 1)):.1%}")
     print(f"    \"This is your X\" but it's another of theirs: {np.mean(conf & (G[:, 2] == 0)):.2%}")
     print(f"    \"Check the letters on it\" (X or Y?):      {np.mean(check):.1%}"
@@ -237,9 +312,11 @@ def main() -> int:
     print(f"    \"Not one of your medicines\" (false alarm): {np.mean(rejected):.1%}")
     print("  When someone scans a pill that is NOT one of theirs:")
     print(f"    caught (\"Not one of your medicines\"):     {caught:.1%}")
+    print(f"    sent to \"check the letters\":                {1 - caught - np.mean((I[:, 0] >= t_match) & (I[:, 1] >= margin)):.1%}")
     print(f"    wrongly confirmed as one of theirs:        {np.mean((I[:, 0] >= t_match) & (I[:, 1] >= margin)):.2%}")
     print("\nRecommended app settings (paste to Claude):")
-    print(f"  MY_PILLS_REJECT={t_reject}  MY_PILLS_MATCH={t_match}  MY_PILLS_MARGIN={margin}")
+    print(f"  MY_PILLS_MODE={mode}  MY_PILLS_PHOTOS={photos}  MY_PILLS_REJECT={t_reject:.4f}  "
+          f"MY_PILLS_MATCH={t_match:.4f}  MY_PILLS_MARGIN={margin:.4f}")
     return 0
 
 

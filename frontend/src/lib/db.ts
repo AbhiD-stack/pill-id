@@ -43,6 +43,11 @@ export interface ReferencePill {
   // (most recent last, capped): the reference adapts to the patient's own
   // lighting, surfaces and camera. Setup photos are never replaced.
   learnedEmbeddings?: number[][];
+  // [mean, std] of each embedding's similarity to other pills (server-side
+  // catalog "crowd"), aligned with embeddings / learnedEmbeddings. Used for
+  // normalized scores (see myPills.ts).
+  cohort?: number[][];
+  learnedCohort?: number[][];
   savedAt: number;
   notes?: string;
 }

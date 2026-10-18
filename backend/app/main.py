@@ -23,6 +23,7 @@ from urllib.parse import quote
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from pydantic import BaseModel
 from PIL import Image, UnidentifiedImageError
 import numpy as np
 import torch
@@ -319,7 +320,7 @@ _hits: dict[str, list[float]] = defaultdict(list)
 @app.middleware("http")
 async def rate_limit(request, call_next):
     """Simple per-device limit on the expensive endpoints."""
-    if request.method == "POST" and request.url.path in ("/api/predict", "/api/read-imprint", "/api/embed", "/api/contribute"):
+    if request.method == "POST" and request.url.path in ("/api/predict", "/api/read-imprint", "/api/embed", "/api/contribute", "/api/cohort"):
         who = (request.headers.get("cf-connecting-ip")
                or request.headers.get("x-forwarded-for", "").split(",")[0].strip()
                or (request.client.host if request.client else "?"))
@@ -622,11 +623,18 @@ async def predict(
         # closer reference than the gallery, which for most drugs only has
         # package art.
         "query_embeddings": _embeddings_json(query_embs),
+        "query_cohort": _cohort_json(clf, query_embs),
     }
 
 
 def _embeddings_json(embs) -> list[list[float]]:
     return [[round(v, 5) for v in row] for row in embs.cpu().tolist()]
+
+
+def _cohort_json(clf: DinoV2PillClassifier, embs) -> list[list[float]]:
+    """[mean, std] per embedding of its similarity to other pills in the
+    catalog -- lets the app normalize My Pills scores (classifier.cohort_stats)."""
+    return [[round(v, 5) for v in row] for row in clf.cohort_stats(embs).tolist()]
 
 
 @app.post("/api/read-imprint")
@@ -664,7 +672,24 @@ async def embed(file: UploadFile = File(...), file_back: UploadFile = File(None)
     images = [await _read_image(file)]
     if file_back is not None:
         images.append(await _read_image(file_back))
-    return {"embeddings": _embeddings_json(clf.embed_images(images))}
+    embs = clf.embed_images(images)
+    return {"embeddings": _embeddings_json(embs), "cohort": _cohort_json(clf, embs)}
+
+
+class _CohortRequest(BaseModel):
+    embeddings: list[list[float]]
+
+
+@app.post("/api/cohort")
+def cohort(req: _CohortRequest):
+    """Cohort statistics for embeddings the app already has (pills saved
+    before the app used them) -- no photo needed."""
+    clf: DinoV2PillClassifier | None = state["classifier"]
+    if clf is None:
+        raise HTTPException(status_code=503, detail="Model is still loading; try again shortly.")
+    if not 1 <= len(req.embeddings) <= 64 or any(len(e) != clf.ref_embeddings.shape[1] for e in req.embeddings):
+        raise HTTPException(status_code=400, detail="Bad embeddings.")
+    return {"cohort": _cohort_json(clf, torch.tensor(req.embeddings, dtype=torch.float32))}
 
 
 _RECENT_PREDICTIONS_MAX = 200

@@ -39,6 +39,7 @@ export type PredictResponse = {
   // saved to "My Pills" and compared against future scans on-device. Absent
   // from older backends.
   query_embeddings?: number[][];
+  query_cohort?: number[][];
 };
 
 // "RX" | "OTC" restricts the search to that category's priority-tier drugs
@@ -217,6 +218,7 @@ export type IdentifyResult = {
   imprintSource: "user" | "ocr" | null;
   imprintFound: boolean | null;
   queryEmbeddings: number[][] | null;
+  queryCohort: number[][] | null;
 };
 
 export function canvasToFile(canvas: HTMLCanvasElement, quality = 0.9): Promise<File> {
@@ -244,7 +246,7 @@ export async function identifyPill(
 ): Promise<IdentifyResult> {
   const file = await canvasToFile(canvas);
   const fileBack = backCanvas ? await canvasToFile(backCanvas) : null;
-  const { prediction_id, predictions, low_confidence, ocr_imprint_read, imprint_source, imprint_found, query_embeddings } =
+  const { prediction_id, predictions, low_confidence, ocr_imprint_read, imprint_source, imprint_found, query_embeddings, query_cohort } =
     await predictPill(file, fileBack, null, imprint, look);
 
   const top = predictions.slice(0, topN);
@@ -274,6 +276,7 @@ export async function identifyPill(
     imprintSource: imprint_source ?? null,
     imprintFound: imprint_found ?? null,
     queryEmbeddings: query_embeddings && query_embeddings.length > 0 ? query_embeddings : null,
+    queryCohort: query_cohort && query_cohort.length > 0 ? query_cohort : null,
   };
 }
 
@@ -299,7 +302,9 @@ export async function readImprint(
 
 // Embeddings of a fresh photo (front, and back if taken) -- used to check a
 // pill against the patient's own saved medicines.
-export async function embedCanvases(front: HTMLCanvasElement, back?: HTMLCanvasElement | null): Promise<number[][]> {
+export type Embedded = { embeddings: number[][]; cohort: number[][] | null };
+
+export async function embedCanvases(front: HTMLCanvasElement, back?: HTMLCanvasElement | null): Promise<Embedded> {
   const formData = new FormData();
   formData.append("file", await canvasToFile(front));
   if (back) formData.append("file_back", await canvasToFile(back));
@@ -309,7 +314,19 @@ export async function embedCanvases(front: HTMLCanvasElement, back?: HTMLCanvasE
     headers: { "ngrok-skip-browser-warning": "true" },
   });
   if (!response.ok) throw await apiError(response, "Checking the pill");
-  return ((await response.json()) as { embeddings: number[][] }).embeddings;
+  const data = (await response.json()) as { embeddings: number[][]; cohort?: number[][] };
+  return { embeddings: data.embeddings, cohort: data.cohort ?? null };
+}
+
+// Cohort statistics for embeddings saved before the app used them.
+export async function fetchCohort(embeddings: number[][]): Promise<number[][]> {
+  const response = await fetch(`${apiBase}/api/cohort`, {
+    method: "POST",
+    body: JSON.stringify({ embeddings }),
+    headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+  });
+  if (!response.ok) throw await apiError(response, "Preparing saved pills");
+  return ((await response.json()) as { cohort: number[][] }).cohort;
 }
 
 // Share a medicine's pill photo (no name or other personal info) so the app

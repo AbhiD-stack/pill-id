@@ -1,17 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { embedCanvases } from "@/lib/api";
+import { embedCanvases, fetchCohort } from "@/lib/api";
 import {
   getDoses, getMedications, getReferencePills, localDate, medKey, setDoseStatus, updateReferencePill,
   type Medication, type ReferencePill, type ScheduleEntry,
 } from "@/lib/db";
-import { checkMyPill, rankMyMedicines, withLearnedScan, type CheckResult, type MedMatch } from "@/lib/myPills";
+import { checkMyPill, MY_PILLS, rankMyMedicines, withLearnedScan, type CheckResult, type MedMatch } from "@/lib/myPills";
 import { doseApplies, SLOTS, slotState } from "@/lib/slots";
 import ImageCapture from "./ImageCapture";
 import { speak, vibrate } from "./AudioAlert";
 
-type Stage = "front" | "back" | "checking" | "result";
+type Stage = "front" | "back" | "back2" | "checking" | "result";
 
 // "Which of my medicines is this?" -- the main check for a senior. Compares
 // the photo only with the patient's own saved pills (set up with a
@@ -36,7 +36,28 @@ export default function CheckPill({
   const [beforeLearn, setBeforeLearn] = useState<ReferencePill | null>(null);
 
   useEffect(() => {
-    getReferencePills().then(setPills);
+    (async () => {
+      const ps = await getReferencePills();
+      setPills(ps);
+      // Pills saved before scores were normalized: fetch their statistics
+      // once (no photo needed). Until then they're compared the plain way.
+      let changed = false;
+      for (const p of ps) {
+        const embs = p.embeddings ?? [];
+        const learned = p.learnedEmbeddings ?? [];
+        if (embs.length === 0) continue;
+        if (p.cohort?.length === embs.length && (p.learnedCohort?.length ?? 0) === learned.length) continue;
+        try {
+          const stats = await fetchCohort([...embs, ...learned]);
+          await updateReferencePill({ ...p, cohort: stats.slice(0, embs.length), learnedCohort: stats.slice(embs.length) });
+          changed = true;
+        } catch (err) {
+          console.error("Couldn't prepare a saved pill (non-fatal):", err);
+          break;
+        }
+      }
+      if (changed) setPills(await getReferencePills());
+    })();
   }, []);
 
   const ready = (pills ?? []).filter((p) => p.embeddings && p.embeddings.length > 0);
@@ -48,7 +69,8 @@ export default function CheckPill({
     setBeforeLearn(null);
     try {
       const emb = await embedCanvases(f, b);
-      const res = checkMyPill(rankMyMedicines(emb, ready));
+      const { ranked, mode } = rankMyMedicines(emb, ready);
+      const res = checkMyPill(ranked, MY_PILLS[mode]);
       setResult(res);
       setStage("result");
       if (res.kind === "match") {
@@ -142,7 +164,7 @@ export default function CheckPill({
       {stage === "back" && front && (
         <ImageCapture
           sideLabel="back"
-          allowSkip
+          allowSkip={MY_PILLS.PHOTOS === 1}
           onSkip={() => check(front, null)}
           onImageReady={(c) => {
             setBack(c);
@@ -150,6 +172,20 @@ export default function CheckPill({
           }}
           onCancel={() => setStage("front")}
         />
+      )}
+
+      {stage === "back2" && front && (
+        <>
+          <p className="mb-3 text-lg font-bold text-slate-900">Turn the pill over and take one more photo</p>
+          <ImageCapture
+            sideLabel="back"
+            onImageReady={(c) => {
+              setBack(c);
+              check(front, c);
+            }}
+            onCancel={() => setStage("result")}
+          />
+        </>
       )}
 
       {stage === "checking" && (
@@ -174,6 +210,11 @@ export default function CheckPill({
                 </p>
               </div>
               <PhotoPair label="Your photo now" src={front.toDataURL()} />
+              {!back && (
+                <button onClick={() => setStage("back2")} className="w-full py-3.5 bg-indigo-600 text-white text-base font-bold rounded-xl">
+                  📷 Add the other side — more accurate
+                </button>
+              )}
               {result.options.map((o) => (
                 <div key={o.key} className="flex gap-3 items-center p-3 bg-white border-2 border-slate-200 rounded-2xl">
                   <img src={o.pill.photoDataUrl} alt={o.pill.drugName} className="w-24 h-24 rounded-xl border border-slate-200 object-contain bg-white shrink-0" />
@@ -185,7 +226,7 @@ export default function CheckPill({
                       </p>
                     )}
                     <button onClick={() => setConfirmed(o)} className="mt-2 w-full py-3 bg-emerald-600 text-white font-bold rounded-xl">
-                      ✓ It&apos;s this one
+                      {o.pill.imprint ? "✓ The letters match — it's this one" : "✓ It looks exactly like this one"}
                     </button>
                   </div>
                 </div>
@@ -212,7 +253,12 @@ export default function CheckPill({
                 </button>
               </div>
               <PhotoPair label="Your photo" src={front.toDataURL()} />
-              <button onClick={again} className="w-full py-4 bg-indigo-600 text-white text-lg font-bold rounded-2xl">
+              {!back && (
+                <button onClick={() => setStage("back2")} className="w-full py-4 bg-indigo-600 text-white text-lg font-bold rounded-2xl">
+                  📷 Add the other side and check again
+                </button>
+              )}
+              <button onClick={again} className="w-full py-4 bg-slate-100 text-slate-800 text-lg font-bold rounded-2xl">
                 📷 Retake the photo
               </button>
               <button onClick={() => onAddNew(front, back)} className="w-full py-3.5 bg-slate-100 text-slate-800 font-bold rounded-xl">

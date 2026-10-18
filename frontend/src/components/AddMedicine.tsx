@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { contributePhoto, embedCanvases, identifyPill, type PillMatch, type SearchResult } from "@/lib/api";
+import { contributePhoto, embedCanvases, identifyPill, type Embedded, type PillMatch, type SearchResult } from "@/lib/api";
 import { addReferencePill, setMedicationTimes, type TimeOfDay } from "@/lib/db";
 import ImageCapture from "./ImageCapture";
 import PillSearchPanel from "./PillSearchPanel";
@@ -32,7 +32,7 @@ export default function AddMedicine({
   const [front, setFront] = useState<HTMLCanvasElement | null>(initialFront);
   const [back, setBack] = useState<HTMLCanvasElement | null>(initialBack);
   const [suggestions, setSuggestions] = useState<PillMatch[] | null>(null);
-  const [embeddings, setEmbeddings] = useState<number[][] | null>(null);
+  const [embeddings, setEmbeddings] = useState<Embedded | null>(null);
   const [chosen, setChosen] = useState<Chosen | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -51,7 +51,7 @@ export default function AddMedicine({
         const r = await identifyPill(front, 5, back, null);
         if (cancelled) return;
         setSuggestions(r.matches);
-        if (r.queryEmbeddings?.length) setEmbeddings(r.queryEmbeddings);
+        if (r.queryEmbeddings?.length) setEmbeddings({ embeddings: r.queryEmbeddings, cohort: r.queryCohort });
         else setEmbeddings(await embedCanvases(front, back));
       } catch (err) {
         console.error("Suggestions failed:", err);
@@ -90,7 +90,8 @@ export default function AddMedicine({
         color: chosen.color,
         shape: chosen.shape,
         photoDataUrl: front.toDataURL("image/jpeg", 0.9),
-        embeddings: embeddings ?? undefined,
+        embeddings: embeddings?.embeddings,
+        cohort: embeddings?.cohort ?? undefined,
       });
       if (buckets.length) await setMedicationTimes(chosen.drugName, chosen.ndc, buckets);
       if (share) {

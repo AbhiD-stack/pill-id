@@ -174,6 +174,20 @@ class DinoV2PillClassifier:
                     self._restricted_masks[cat] = mask
                     print(f"[classifier] Category mask for {cat}: {int(mask.sum())} labels.")
 
+    @torch.no_grad()
+    def cohort_stats(self, embeddings: torch.Tensor, skip: int = 10, k: int = 50) -> torch.Tensor:
+        """(n, 2) mean and std of each embedding's similarity to a "crowd" of
+        other pills: its catalog neighbors ranked skip+1 .. skip+k (the top
+        `skip` may be the same pill, so they're left out). Used to normalize
+        My Pills scores: a match must stand out from how similar the photo is
+        to pills in general (cohort / S-norm, as in face verification)."""
+        out = []
+        ref = self.ref_embeddings
+        for chunk in torch.split(F.normalize(embeddings.float().to(self.device), dim=1), 256):
+            top = (chunk @ ref.T).topk(skip + k, dim=1).values[:, skip:]
+            out.append(torch.stack([top.mean(1), top.std(1).clamp_min(1e-4)], dim=1))
+        return torch.cat(out).cpu()
+
     def add_to_gallery(self, embeddings: torch.Tensor, labels: List[str], paths: List[str]) -> int:
         """Adds reference images found after training (real pill photos from
         drug labels, see scripts/build_photo_gallery.py) to existing labels.
