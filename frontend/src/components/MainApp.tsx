@@ -12,8 +12,7 @@ import ScanHistory from "@/components/ScanHistory";
 import { useReminders } from "@/components/useReminders";
 import { speak } from "@/components/AudioAlert";
 import {
-  getSchedule, ScheduleEntry, getReferencePills, deleteReferencePill, updateReferencePill, ReferencePill,
-  getMedications, Medication,
+  getReferencePills, updateReferencePill, ReferencePill, getMedications, Medication,
 } from "@/lib/db";
 import { embedPhoto } from "@/lib/api";
 import {
@@ -43,7 +42,6 @@ export default function MainApp({ onResetSession }: MainAppProps) {
   const [activeTab, setActiveTab] = useState<TabType>("meds");
   const [adding, setAdding] = useState<Adding>(null);
   const [identifyMode, setIdentifyMode] = useState<"scan" | "name">("scan");
-  const [schedule, setSchedule] = useState<ScheduleEntry[]>([]);
   const [meds, setMeds] = useState<Medication[]>([]);
   const [beersFlags, setBeersFlags] = useState<{ med: Medication; flag: BeersFlag }[]>([]);
   const [interactionFlags, setInteractionFlags] = useState<InteractionFlag[]>([]);
@@ -74,7 +72,6 @@ export default function MainApp({ onResetSession }: MainAppProps) {
   // that displays it becomes active, so drops made in the Scan tab show up.
   useEffect(() => {
     if (activeTab === "schedule" || activeTab === "safety" || activeTab === "meds") {
-      getSchedule().then(setSchedule);
       getMedications().then(setMeds);
     }
     if (activeTab === "meds") {
@@ -132,16 +129,16 @@ export default function MainApp({ onResetSession }: MainAppProps) {
   // the code (no name/DOB, no server round-trip) so a phone/clinic webcam
   // can scan it and read the medication list straight off the image.
   useEffect(() => {
-    if (schedule.length === 0) {
+    if (meds.length === 0) {
       setQrDataUrl(null);
       return;
     }
     let cancelled = false;
-    buildQrPassportDataUrl(schedule)
+    buildQrPassportDataUrl(meds)
       .then((url) => { if (!cancelled) setQrDataUrl(url); })
       .catch(() => { if (!cancelled) setQrDataUrl(null); });
     return () => { cancelled = true; };
-  }, [schedule]);
+  }, [meds]);
 
   return (
     <div className="flex-1 flex flex-col pb-28 bg-slate-50 text-slate-900 min-h-screen">
@@ -170,7 +167,7 @@ export default function MainApp({ onResetSession }: MainAppProps) {
       {reminders.due && activeTab !== "schedule" && (
         <div className={`mx-4 mt-4 p-4 rounded-2xl border-2 shadow-sm ${reminders.due.overdue ? "bg-red-50 border-red-400" : "bg-amber-50 border-amber-400"}`}>
           <p className="text-lg font-bold text-slate-900">
-            🔔 {reminders.due.overdue ? "Missed: " : "Time for your "}{reminders.due.label.toLowerCase()} medicines
+            🔔 {reminders.due.overdue ? `Missed: your ${reminders.due.label} medicines` : `Time for your ${reminders.due.label} medicines`}
           </p>
           <p className="text-base text-slate-700 mt-1">{reminders.due.meds.join(", ")}</p>
           <div className="grid grid-cols-3 gap-2 mt-3">
@@ -335,7 +332,7 @@ export default function MainApp({ onResetSession }: MainAppProps) {
               {qrDataUrl ? (
                 <img
                   src={qrDataUrl}
-                  alt="QR code encoding your scheduled medication list"
+                  alt="QR code encoding your medication schedule"
                   className="w-40 h-40 rounded-2xl border border-slate-300 mb-4"
                 />
               ) : (
@@ -346,7 +343,7 @@ export default function MainApp({ onResetSession }: MainAppProps) {
               )}
               <p className="text-xs text-slate-500 max-w-sm">
                 {qrDataUrl
-                  ? `Encodes your ${schedule.length} scheduled medication${schedule.length === 1 ? "" : "s"} (name + NDC) directly in the code — generated on this device, nothing sent to a server. Scan it to load the list elsewhere.`
+                  ? `Encodes your ${meds.length} scheduled medication${meds.length === 1 ? "" : "s"} (name, NDC, how often and when) directly in the code — generated on this device, nothing sent to a server. Scan it to load the list elsewhere.`
                   : "Scan this passport code to load the medication list instantly, with no server-side data persistence."}
               </p>
             </div>

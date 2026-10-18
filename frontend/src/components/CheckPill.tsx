@@ -4,12 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { embedCanvases, fetchCohort } from "@/lib/api";
 import {
   getDoses, getMedications, getReferencePills, localDate, medKey, setDoseStatus, updateReferencePill,
-  type Medication, type ReferencePill, type ScheduleEntry,
+  type Medication, type ReferencePill,
 } from "@/lib/db";
 import { checkMyPill, MY_PILLS, rankMyMedicines, withLearnedScan, type CheckResult, type MedMatch } from "@/lib/myPills";
 import { reviseScan, saveScan, thumbFromCanvas, type NewScan } from "@/lib/scanLog";
 import { deleteScan, type ScanRecord } from "@/lib/db";
-import { doseApplies, SLOTS, slotState } from "@/lib/slots";
+import { describePlan, doseState, dosesOn, formatTime, type DoseSlot } from "@/lib/schedule";
 import ImageCapture from "./ImageCapture";
 import { speak, vibrate } from "./AudioAlert";
 
@@ -357,7 +357,7 @@ function PhotoPair({ label, src }: { label: string; src: string }) {
 // now -- one tap to mark it taken.
 function Confirmed({ match, scan }: { match: MedMatch; scan: string }) {
   const [med, setMed] = useState<Medication | null>(null);
-  const [due, setDue] = useState<ScheduleEntry | null>(null);
+  const [due, setDue] = useState<DoseSlot | null>(null);
   const [marked, setMarked] = useState(false);
   const name = match.pill.drugName;
 
@@ -367,9 +367,10 @@ function Confirmed({ match, scan }: { match: MedMatch; scan: string }) {
       const [meds, doses] = await Promise.all([getMedications(), getDoses(today, today)]);
       const m = meds.find((x) => x.key === medKey(match.pill.drugName, match.pill.ndc)) ?? null;
       setMed(m);
-      const done = new Set(doses.map((d) => d.scheduleId));
-      const e = m?.entries.find((x) => slotState(x.bucket) !== "upcoming" && doseApplies(x, today) && !done.has(x.id));
-      setDue(e ?? null);
+      const done = new Set(doses.map((d) => d.doseId));
+      // The latest dose that has come up today and isn't marked yet.
+      const open = m ? dosesOn(m, today).filter((s) => doseState(s, m.plan) !== "upcoming" && !done.has(s.doseId)) : [];
+      setDue(open[open.length - 1] ?? null);
     })();
   }, [match]);
 
@@ -380,7 +381,7 @@ function Confirmed({ match, scan }: { match: MedMatch; scan: string }) {
         <p className="text-3xl font-bold text-slate-900 mt-1 break-words">{name}</p>
         {med && (
           <p className="text-base text-slate-700 mt-1">
-            You take it: {med.buckets.map((b) => SLOTS.find((s) => s.key === b)!.label).join(", ")}
+            You take it: {describePlan(med.plan)}
           </p>
         )}
         {match.pill.imprint && (
@@ -406,13 +407,13 @@ function Confirmed({ match, scan }: { match: MedMatch; scan: string }) {
       {due && !marked && (
         <button
           onClick={async () => {
-            await setDoseStatus(due, localDate(), "taken");
+            await setDoseStatus(med!, due, localDate(), "taken");
             vibrate([60, 40, 60]);
             setMarked(true);
           }}
           className="w-full py-4 bg-emerald-600 text-white text-lg font-bold rounded-2xl"
         >
-          ✓ Mark my {SLOTS.find((s) => s.key === due.bucket)!.label.toLowerCase()} dose as taken
+          ✓ Mark my {formatTime(due.time)} dose as taken
         </button>
       )}
       {marked && <p className="text-center text-lg font-bold text-emerald-700">✓ Marked as taken</p>}

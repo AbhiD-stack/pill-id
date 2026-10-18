@@ -1,13 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { getDoses, getMedications, localDate, TimeOfDay } from "@/lib/db";
-import { doseApplies, SLOTS, slotState } from "@/lib/slots";
+import { getDoses, getMedications, localDate } from "@/lib/db";
+import { doseState, dosesOn, formatTime } from "@/lib/schedule";
 import { vibrate } from "./AudioAlert";
 
 export interface DueReminder {
-  slot: TimeOfDay;
-  label: string;
+  time: string; // HH:MM
+  label: string; // e.g. "8:00 AM"
   meds: string[];
   overdue: boolean;
 }
@@ -47,24 +47,34 @@ export function useReminders(refreshKey: number) {
     const now = new Date();
     const today = localDate(now);
     const [meds, doses] = await Promise.all([getMedications(), getDoses(today, today)]);
-    const done = new Set(doses.map((d) => d.scheduleId));
+    const done = new Set(doses.map((d) => d.doseId));
+    // Doses that have come up today and aren't marked, by clock time.
+    const byTime = new Map<string, { meds: string[]; overdue: boolean }>();
+    for (const m of meds) {
+      for (const slot of dosesOn(m, today)) {
+        const state = doseState(slot, m.plan, now);
+        if (state === "upcoming" || done.has(slot.doseId)) continue;
+        const g = byTime.get(slot.time) ?? { meds: [], overdue: true };
+        g.meds.push(m.drugName);
+        g.overdue &&= state === "overdue";
+        byTime.set(slot.time, g);
+      }
+    }
     let found: DueReminder | null = null;
-    for (const slot of SLOTS) {
-      const state = slotState(slot.key, now);
-      if (state === "upcoming") continue;
-      const pending = meds.filter((m) =>
-        m.entries.some((e) => e.bucket === slot.key && !done.has(e.id) && doseApplies(e, today)));
-      if (pending.length === 0 || storageGet(dismissedKey(today, slot.key))) continue;
-      found = { slot: slot.key, label: slot.label, meds: pending.map((m) => m.drugName), overdue: state === "overdue" };
+    // The most recent dose time first: that's the one to take now.
+    for (const time of [...byTime.keys()].sort().reverse()) {
+      if (storageGet(dismissedKey(today, time))) continue;
+      const g = byTime.get(time)!;
+      found = { time, label: formatTime(time), meds: g.meds, overdue: g.overdue };
       // First time this dose time comes up today: alert once.
-      if (!storageGet(seenKey(today, slot.key))) {
-        storageSet(seenKey(today, slot.key), "1");
+      if (!storageGet(seenKey(today, time))) {
+        storageSet(seenKey(today, time), "1");
         vibrate([300, 150, 300]);
         if (typeof Notification !== "undefined" && Notification.permission === "granted") {
           try {
-            new Notification(`Time for your ${slot.label.toLowerCase()} medicines`, {
+            new Notification(`Time for your ${found.label} medicines`, {
               body: found.meds.join(", "),
-              tag: `pillid-${today}-${slot.key}`,
+              tag: `pillid-${today}-${time}`,
             });
           } catch {
             // some mobile browsers only allow notifications from a service worker
@@ -83,7 +93,7 @@ export function useReminders(refreshKey: number) {
   }, [check, refreshKey]);
 
   const dismiss = useCallback(() => {
-    if (due) storageSet(dismissedKey(localDate(), due.slot), "1");
+    if (due) storageSet(dismissedKey(localDate(), due.time), "1");
     setDue(null);
   }, [due]);
 

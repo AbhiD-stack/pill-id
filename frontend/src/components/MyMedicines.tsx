@@ -2,11 +2,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  deleteReferencePill, getMedications, getReferencePills, medKey, removeMedication, setMedicationTimes,
+  deleteReferencePill, getMedications, getReferencePills, medKey, removeMedication, setMedicationPlan,
   type Medication, type ReferencePill,
 } from "@/lib/db";
-import { SLOTS } from "@/lib/slots";
-import { TimePicker } from "./AddToMedsButton";
+import { describePlan } from "@/lib/schedule";
+import SchedulePicker from "./SchedulePicker";
 
 type Row = { key: string; drugName: string; ndc?: string; med: Medication | null; pills: ReferencePill[] };
 
@@ -70,7 +70,7 @@ export default function MyMedicines({ onAdd, onChanged }: { onAdd: () => void; o
                 <div className="min-w-0 flex-1">
                   <p className="text-lg font-bold text-slate-900 break-words">{r.drugName}</p>
                   <p className="text-sm text-slate-600">
-                    {r.med ? r.med.buckets.map((b) => SLOTS.find((s) => s.key === b)!.label).join(", ") : "As needed"}
+                    {r.med ? describePlan(r.med.plan) : "As needed"}
                   </p>
                   {photo?.imprint && (
                     <p className="text-sm text-slate-500">
@@ -89,15 +89,28 @@ export default function MyMedicines({ onAdd, onChanged }: { onAdd: () => void; o
               </button>
               {editing === r.key && (
                 <div className="space-y-3">
-                  <TimePicker
-                    initial={r.med?.buckets ?? []}
-                    saveLabel="Save times"
-                    onSave={async (buckets) => {
-                      await setMedicationTimes(r.drugName, r.ndc, buckets);
+                  <SchedulePicker
+                    drugName={r.drugName}
+                    initial={r.med?.plan ?? null}
+                    saveLabel="Save"
+                    onSave={async (plan) => {
+                      await setMedicationPlan(r.drugName, r.ndc, plan);
                       setEditing(null);
                       refresh();
                     }}
                   />
+                  {r.med && (
+                    <button
+                      onClick={async () => {
+                        await setMedicationPlan(r.drugName, r.ndc, null);
+                        setEditing(null);
+                        refresh();
+                      }}
+                      className="w-full py-3 bg-slate-100 text-slate-800 font-bold rounded-xl"
+                    >
+                      Only as needed (no set times)
+                    </button>
+                  )}
                   <button
                     onClick={async () => {
                       if (!confirm(`Remove ${r.drugName} and its photo?`)) return;

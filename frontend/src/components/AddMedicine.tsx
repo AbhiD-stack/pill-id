@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { contributePhoto, embedCanvases, type Embedded, type SearchResult } from "@/lib/api";
-import { addReferencePill, setMedicationTimes, type TimeOfDay } from "@/lib/db";
+import { addReferencePill, setMedicationPlan } from "@/lib/db";
+import type { Frequency } from "@/lib/schedule";
 import ImageCapture from "./ImageCapture";
 import PillSearchPanel from "./PillSearchPanel";
-import { TimePicker } from "./AddToMedsButton";
+import SchedulePicker from "./SchedulePicker";
 import { vibrate } from "./AudioAlert";
 
 type Step = "front" | "back" | "name" | "times" | "done";
@@ -68,7 +69,7 @@ export default function AddMedicine({
     setError(null);
   }
 
-  async function save(buckets: TimeOfDay[]) {
+  async function save(plan: Frequency | null) {
     if (!front || !chosen || saving) return;
     setSaving(true);
     try {
@@ -82,7 +83,7 @@ export default function AddMedicine({
         embeddings: embeddings?.embeddings,
         cohort: embeddings?.cohort ?? undefined,
       });
-      if (buckets.length) await setMedicationTimes(chosen.drugName, chosen.ndc, buckets);
+      if (plan) await setMedicationPlan(chosen.drugName, chosen.ndc, plan);
       if (share) {
         // Best-effort, in the background: never blocks or fails the setup.
         contributePhoto(front, back, chosen.label).catch((err) => console.error("Sharing the photo failed (non-fatal):", err));
@@ -187,7 +188,7 @@ export default function AddMedicine({
         <div className="space-y-4">
           {header(3, `When do you take ${chosen.drugName}?`)}
           {error && <p className="text-sm text-red-800 bg-red-50 border border-red-200 rounded-xl p-3">{error}</p>}
-          <TimePicker initial={[]} saveLabel={saving ? "Saving…" : "Save this medicine"} onSave={(b) => save(b)} />
+          <SchedulePicker drugName={chosen.drugName} initial={null} saveLabel={saving ? "Saving…" : "Save this medicine"} onSave={(p) => save(p)} />
           <label className="flex items-start gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl">
             <input type="checkbox" checked={share} onChange={(e) => setShare(e.target.checked)} className="mt-1 w-6 h-6 shrink-0" />
             <span className="text-sm text-slate-700">
@@ -196,7 +197,7 @@ export default function AddMedicine({
             </span>
           </label>
           <button
-            onClick={() => save([])}
+            onClick={() => save(null)}
             disabled={saving}
             className="w-full py-3 bg-slate-100 text-slate-800 font-bold rounded-xl"
           >

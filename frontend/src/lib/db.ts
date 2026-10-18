@@ -1,9 +1,11 @@
 "use client";
 
 import { openDB, DBSchema, IDBPDatabase } from "idb";
+import type { Frequency } from "./schedule";
 
+// Old (before exact times): one entry per medicine per time of day. Only
+// read once, to convert to MedicationPlan.
 export type TimeOfDay = "morning" | "noon" | "night";
-
 export interface ScheduleEntry {
   id: string; // uuid
   drugName: string;
@@ -12,13 +14,14 @@ export interface ScheduleEntry {
   createdAt: number;
 }
 
-export interface LogEntry {
-  id: string; // uuid
+// One medicine the patient takes on a schedule (as-needed medicines have
+// none): exact times and how often (see schedule.ts).
+export interface MedicationPlan {
+  key: string; // medKey(drugName, ndc)
   drugName: string;
   ndc?: string;
-  scannedAt: number;
-  bucket: TimeOfDay | null; // which bucket it was matched against, if any
-  onSchedule: boolean; // compliance logic result
+  plan: Frequency;
+  createdAt: number;
 }
 
 // A pinned "this is what MY actual pill looks like" record -- the point is
@@ -52,15 +55,15 @@ export interface ReferencePill {
   notes?: string;
 }
 
-// One dose of one scheduled medication on one day: taken or skipped. A
-// dose with no record is still pending (or missed, once its time passes).
+// One dose of one medicine on one day: taken or skipped. A dose with no
+// record is still pending (or missed, once its time passes).
 export type DoseStatus = "taken" | "skipped";
 export interface DoseRecord {
-  id: string; // `${date}|${scheduleEntryId}`
-  scheduleId: string;
+  id: string; // `${date}|${doseId}`
+  doseId: string; // `${medKey}@${HH:MM}`
   drugName: string;
   date: string; // YYYY-MM-DD, local time
-  bucket: TimeOfDay;
+  time: string; // HH:MM
   status: DoseStatus;
   at: number;
 }
@@ -88,10 +91,11 @@ export interface ScanRecord {
 
 interface PillIDDb extends DBSchema {
   schedule: { key: string; value: ScheduleEntry; indexes: { "by-bucket": string } };
-  logs: { key: string; value: LogEntry; indexes: { "by-time": number } };
+  logs: { key: string; value: unknown; indexes: { "by-time": number } };
   referencePills: { key: string; value: ReferencePill };
   doses: { key: string; value: DoseRecord; indexes: { "by-date": string } };
   scans: { key: string; value: ScanRecord; indexes: { "by-time": number } };
+  plans: { key: string; value: MedicationPlan };
 }
 
 let dbPromise: Promise<IDBPDatabase<PillIDDb>> | null = null;
@@ -99,7 +103,7 @@ let dbPromise: Promise<IDBPDatabase<PillIDDb>> | null = null;
 function getDb() {
   if (!dbPromise) {
     dbPromise = openDB<PillIDDb>("pill-id-v2", 4, {
-      upgrade(db, oldVersion) {
+      async upgrade(db, oldVersion, _newVersion, tx) {
         if (oldVersion < 1) {
           const schedule = db.createObjectStore("schedule", { keyPath: "id" });
           schedule.createIndex("by-bucket", "bucket");
@@ -116,62 +120,13 @@ function getDb() {
         if (oldVersion < 4) {
           const scans = db.createObjectStore("scans", { keyPath: "id" });
           scans.createIndex("by-time", "at");
+          db.createObjectStore("plans", { keyPath: "key" });
+          if (oldVersion >= 1) await migrateToPlans(tx as unknown as MigrationTx);
         }
       },
     });
   }
   return dbPromise;
-}
-
-export async function addScheduleEntry(entry: Omit<ScheduleEntry, "id" | "createdAt">) {
-  const db = await getDb();
-  const full: ScheduleEntry = { ...entry, id: crypto.randomUUID(), createdAt: Date.now() };
-  await db.put("schedule", full);
-  return full;
-}
-
-export async function getSchedule(): Promise<ScheduleEntry[]> {
-  const db = await getDb();
-  return db.getAll("schedule");
-}
-
-export async function deleteScheduleEntry(id: string) {
-  const db = await getDb();
-  await db.delete("schedule", id);
-}
-
-// Compliance logic: if a scan happens well outside the pre-set regimen
-// bucket window, flag it as a possible missed/mistimed dose.
-const BUCKET_WINDOWS: Record<TimeOfDay, [number, number]> = {
-  morning: [5, 11], // 5am - 11am
-  noon: [11, 16], // 11am - 4pm
-  night: [18, 23], // 6pm - 11pm
-};
-
-export function checkCompliance(now: Date, bucket: TimeOfDay | null): boolean {
-  if (!bucket) return false;
-  const hour = now.getHours();
-  const [start, end] = BUCKET_WINDOWS[bucket];
-  return hour >= start && hour < end;
-}
-
-export async function addLogEntry(entry: Omit<LogEntry, "id">) {
-  const db = await getDb();
-  const full: LogEntry = { ...entry, id: crypto.randomUUID() };
-  await db.put("logs", full);
-  return full;
-}
-
-export async function getLogs(): Promise<LogEntry[]> {
-  const db = await getDb();
-  const all = await db.getAll("logs");
-  return all.sort((a, b) => b.scannedAt - a.scannedAt);
-}
-
-export async function getRecentDrugNames(hours = 24): Promise<string[]> {
-  const logs = await getLogs();
-  const cutoff = Date.now() - hours * 3600 * 1000;
-  return logs.filter((l) => l.scannedAt >= cutoff).map((l) => l.drugName);
 }
 
 export async function addReferencePill(entry: Omit<ReferencePill, "id" | "savedAt">) {
@@ -198,18 +153,7 @@ export async function deleteReferencePill(id: string) {
 }
 
 // ── Medications & doses ───────────────────────────────────────────────────
-// A medication is every schedule entry with the same name + NDC (one entry
-// per time of day it's taken).
 
-export interface Medication {
-  key: string; // drugName|ndc
-  drugName: string;
-  ndc?: string;
-  buckets: TimeOfDay[];
-  entries: ScheduleEntry[];
-}
-
-const BUCKET_ORDER: TimeOfDay[] = ["morning", "noon", "night"];
 export const medKey = (drugName: string, ndc?: string) => `${drugName.trim().toLowerCase()}|${ndc || ""}`;
 
 export function localDate(d = new Date()): string {
@@ -217,56 +161,85 @@ export function localDate(d = new Date()): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+export type Medication = MedicationPlan;
+
 export async function getMedications(): Promise<Medication[]> {
-  const meds = new Map<string, Medication>();
-  for (const e of await getSchedule()) {
-    const key = medKey(e.drugName, e.ndc);
-    const m = meds.get(key) ?? { key, drugName: e.drugName, ndc: e.ndc, buckets: [], entries: [] };
-    m.entries.push(e);
-    if (!m.buckets.includes(e.bucket)) m.buckets.push(e.bucket);
-    meds.set(key, m);
-  }
-  return [...meds.values()]
-    .map((m) => ({ ...m, buckets: BUCKET_ORDER.filter((b) => m.buckets.includes(b)) }))
-    .sort((a, b) => a.drugName.localeCompare(b.drugName));
+  const db = await getDb();
+  return (await db.getAll("plans")).sort((a, b) => a.drugName.localeCompare(b.drugName));
 }
 
-// Sets exactly which times of day a medication is taken (adds it if new;
-// an empty list removes it). Existing entries -- and their dose history --
-// are kept for times that stay selected.
-export async function setMedicationTimes(drugName: string, ndc: string | undefined, buckets: TimeOfDay[]) {
+// Sets how and when a medicine is taken (adds it if new); null takes it off
+// the schedule (as needed). Dose history is kept.
+export async function setMedicationPlan(drugName: string, ndc: string | undefined, plan: Frequency | null) {
   const db = await getDb();
   const key = medKey(drugName, ndc);
-  const existing = (await db.getAll("schedule")).filter((e) => medKey(e.drugName, e.ndc) === key);
-  for (const e of existing) {
-    if (!buckets.includes(e.bucket)) await db.delete("schedule", e.id);
+  if (!plan) {
+    await db.delete("plans", key);
+    return;
   }
-  for (const b of buckets) {
-    if (!existing.some((e) => e.bucket === b)) {
-      await db.put("schedule", { id: crypto.randomUUID(), drugName, ndc, bucket: b, createdAt: Date.now() });
-    }
-  }
+  const existing = await db.get("plans", key);
+  await db.put("plans", { key, drugName, ndc, plan, createdAt: existing?.createdAt ?? Date.now() });
 }
 
 export async function removeMedication(drugName: string, ndc?: string) {
-  await setMedicationTimes(drugName, ndc, []);
+  await setMedicationPlan(drugName, ndc, null);
 }
 
-export async function setDoseStatus(entry: ScheduleEntry, date: string, status: DoseStatus | null) {
+export async function setDoseStatus(
+  med: { drugName: string },
+  dose: { doseId: string; time: string },
+  date: string,
+  status: DoseStatus | null,
+) {
   const db = await getDb();
-  const id = `${date}|${entry.id}`;
+  const id = `${date}|${dose.doseId}`;
   if (status === null) {
     await db.delete("doses", id);
     return;
   }
-  await db.put("doses", {
-    id, scheduleId: entry.id, drugName: entry.drugName, date, bucket: entry.bucket, status, at: Date.now(),
-  });
+  await db.put("doses", { id, doseId: dose.doseId, drugName: med.drugName, date, time: dose.time, status, at: Date.now() });
 }
 
 export async function getDoses(fromDate: string, toDate: string): Promise<DoseRecord[]> {
   const db = await getDb();
   return db.getAllFromIndex("doses", "by-date", IDBKeyRange.bound(fromDate, toDate));
+}
+
+// Morning / midday / evening entries become a daily plan at the clock times
+// the user had set for them; their dose history moves along.
+type MigrationTx = {
+  objectStore(name: string): { getAll(): Promise<any[]>; put(v: any): Promise<unknown>; delete(k: string): Promise<unknown> };
+};
+async function migrateToPlans(tx: MigrationTx) {
+  const slotTimes: Record<string, string> = { morning: "08:00", noon: "13:00", night: "20:00" };
+  try {
+    const saved = JSON.parse(localStorage.getItem("pillid.slotTimes") || "{}");
+    for (const k of Object.keys(slotTimes)) if (/^\d{2}:\d{2}$/.test(saved[k] ?? "")) slotTimes[k] = saved[k];
+  } catch {
+    // defaults
+  }
+  const entries: ScheduleEntry[] = await tx.objectStore("schedule").getAll();
+  const plans = new Map<string, MedicationPlan>();
+  const doseIdOf = new Map<string, { doseId: string; time: string }>();
+  for (const e of entries) {
+    const key = medKey(e.drugName, e.ndc);
+    const time = slotTimes[e.bucket] ?? "08:00";
+    const p = plans.get(key) ?? { key, drugName: e.drugName, ndc: e.ndc, plan: { kind: "daily", times: [] }, createdAt: e.createdAt };
+    if (p.plan.kind === "daily" && !p.plan.times.includes(time)) p.plan.times.push(time);
+    p.createdAt = Math.min(p.createdAt, e.createdAt);
+    plans.set(key, p);
+    doseIdOf.set(e.id, { doseId: `${key}@${time}`, time });
+  }
+  for (const p of plans.values()) {
+    if (p.plan.kind === "daily") p.plan.times.sort();
+    await tx.objectStore("plans").put(p);
+  }
+  const doses = tx.objectStore("doses");
+  for (const d of await doses.getAll()) {
+    const to = doseIdOf.get(d.scheduleId);
+    await doses.delete(d.id);
+    if (to) await doses.put({ id: `${d.date}|${to.doseId}`, doseId: to.doseId, drugName: d.drugName, date: d.date, time: to.time, status: d.status, at: d.at });
+  }
 }
 
 // ── Scan history ──────────────────────────────────────────────────────────

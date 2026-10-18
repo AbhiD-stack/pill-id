@@ -59,9 +59,12 @@ function imprintLines(imprint: string | null | undefined): string[] {
   return [tokens.slice(0, best).join(" "), tokens.slice(best).join(" ")];
 }
 
+// The capsule outline is small in the shared 24x24 icon space; draw it larger.
+const SCALE: Record<string, number> = { CAPSULE: 1.3 };
+
 // Room for the imprint inside each outline (24x24 space): [width, height].
 function textBox(shape: string): [number, number] {
-  if (shape === "CAPSULE") return [14, 6.5];
+  if (shape === "CAPSULE") return [18, 8.5]; // drawn 1.3x larger, see SCALE
   if (shape === "OVAL" || shape === "RECTANGLE") return [15, 8.5];
   if (shape === "SEMI-CIRCLE") return [12, 5];
   return [12, 11];
@@ -108,6 +111,7 @@ export default function PillDrawing({ look, title }: { look: PillLookFacts; titl
           <stop offset="100%" stopColor="#fff" stopOpacity="0" />
         </radialGradient>
       </defs>
+      <g transform={`translate(12 12) scale(${SCALE[shape] ?? 1}) translate(-12 -12)`}>
       <g clipPath={`url(#${id}-clip)`}>
         <rect x="0" y="0" width="24" height="24" fill={c1} />
         {c2 !== c1 && <rect x="12" y="0" width="12" height="24" fill={c2} />}
@@ -119,6 +123,7 @@ export default function PillDrawing({ look, title }: { look: PillLookFacts; titl
         {capsule && c2 === c1 && <line x1="12" y1="0" x2="12" y2="24" stroke="#000" strokeOpacity="0.15" strokeWidth="0.3" />}
       </g>
       {shapeEl("none", { stroke: "#0f172a", strokeOpacity: "0.35", strokeWidth: "0.4" })}
+      </g>
       {lines.map((l, i) => (
         <text
           key={i}
