@@ -7,13 +7,15 @@ import { fileURLToPath } from "node:url";
 const staticExport = process.env.npm_lifecycle_event === "build:static";
 // This folder is the project (the repo root has a stray package-lock.json
 // that otherwise makes Next.js resolve packages from the wrong folder).
+// Not on Vercel: it passes its own root (the repo root) and fails the
+// deploy ("lstat .next/package.json") if this overrides it.
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
+const pinRoot = !process.env.VERCEL;
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  turbopack: { root: projectRoot },
-  outputFileTracingRoot: projectRoot,
+  ...(pinRoot && { turbopack: { root: projectRoot }, outputFileTracingRoot: projectRoot }),
   ...(staticExport && {
     output: "export",
     trailingSlash: true,
