@@ -263,7 +263,8 @@ export async function identifyPill(
       score: p.score,
       imprint_match_score: p.imprint_match_score ?? 0,
       reference_image_kind: p.reference_image_kind ?? null,
-      reference_image_url: p.reference_image_url
+      // Only real pill photos are shown (package photos are replaced by a drawing).
+      reference_image_url: p.reference_image_url && p.reference_image_kind === "pill_photo"
         ? await fetchSecureImageBlob(referenceImageSrc(p.reference_image_url))
         : null,
     }))
@@ -371,7 +372,7 @@ async function _resolveSearchResultImages(results: SearchResult[]): Promise<Sear
   return Promise.all(
     results.map(async (r) => ({
       ...r,
-      reference_image_url: r.reference_image_url
+      reference_image_url: r.reference_image_url && r.reference_image_kind === "pill_photo"
         ? await fetchSecureImageBlob(referenceImageSrc(r.reference_image_url))
         : null,
     }))

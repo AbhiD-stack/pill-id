@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { embedCanvases, fetchCohort } from "@/lib/api";
 import {
   getDoses, getMedications, getReferencePills, localDate, medKey, setDoseStatus, updateReferencePill,
   type Medication, type ReferencePill, type ScheduleEntry,
 } from "@/lib/db";
 import { checkMyPill, MY_PILLS, rankMyMedicines, withLearnedScan, type CheckResult, type MedMatch } from "@/lib/myPills";
+import { reviseScan, saveScan, thumbFromCanvas, type NewScan } from "@/lib/scanLog";
+import { deleteScan, type ScanRecord } from "@/lib/db";
 import { doseApplies, SLOTS, slotState } from "@/lib/slots";
 import ImageCapture from "./ImageCapture";
 import { speak, vibrate } from "./AudioAlert";
@@ -34,6 +36,17 @@ export default function CheckPill({
   const [confirmed, setConfirmed] = useState<MedMatch | null>(null);
   // The pill as it was before this scan was learned, to undo on "That's not right".
   const [beforeLearn, setBeforeLearn] = useState<ReferencePill | null>(null);
+  // This scan's entry in the scan history (Safety tab); later answers
+  // ("it's this one", "it's neither") update it in order.
+  const scanLog = useRef<Promise<ScanRecord | null>>(Promise.resolve(null));
+  const logScan = (changes: Partial<NewScan>) => {
+    scanLog.current = scanLog.current
+      .then((r) => (r ? reviseScan(r, changes) : null))
+      .catch((err) => {
+        console.error("Updating the scan history failed (non-fatal):", err);
+        return null;
+      });
+  };
 
   useEffect(() => {
     (async () => {
@@ -62,7 +75,13 @@ export default function CheckPill({
 
   const ready = (pills ?? []).filter((p) => p.embeddings && p.embeddings.length > 0);
 
-  async function check(f: HTMLCanvasElement, b: HTMLCanvasElement | null) {
+  // `retry`: the same pill again with the other side added -- replaces the
+  // earlier one-side entry in the scan history.
+  async function check(f: HTMLCanvasElement, b: HTMLCanvasElement | null, retry = false) {
+    if (retry) {
+      const prev = scanLog.current;
+      scanLog.current = prev.then((r) => (r ? deleteScan(r.id).then(() => null) : null)).catch(() => null);
+    }
     setStage("checking");
     setError(null);
     setConfirmed(null);
@@ -70,8 +89,26 @@ export default function CheckPill({
     try {
       const emb = await embedCanvases(f, b);
       const { ranked, mode } = rankMyMedicines(emb, ready);
-      const res = checkMyPill(ranked, MY_PILLS[mode]);
+      let res = checkMyPill(ranked, MY_PILLS[mode]);
+      // The safety limits were measured with both sides photographed. With
+      // only one side, never say "This is your X" -- ask to check the letters.
+      if (!b && MY_PILLS.PHOTOS === 2 && res.kind === "match") res = { kind: "check", options: [res.best] };
       setResult(res);
+      const top = res.kind === "match" ? res.best : res.kind === "check" ? res.options[0] : null;
+      const entry: NewScan = {
+        source: "check",
+        outcome: res.kind === "match" ? "yours" : res.kind === "check" ? "check" : "not-yours",
+        drugName: top?.pill.drugName ?? null,
+        ndc: top?.pill.ndc,
+        confirmedByUser: false,
+        photoDataUrl: thumbFromCanvas(f),
+      };
+      scanLog.current = scanLog.current
+        .then(() => saveScan(entry))
+        .catch((err) => {
+          console.error("Saving to the scan history failed (non-fatal):", err);
+          return null;
+        });
       setStage("result");
       if (res.kind === "match") {
         vibrate([80, 40, 80]);
@@ -164,7 +201,7 @@ export default function CheckPill({
       {stage === "back" && front && (
         <ImageCapture
           sideLabel="back"
-          allowSkip={MY_PILLS.PHOTOS === 1}
+          allowSkip
           onSkip={() => check(front, null)}
           onImageReady={(c) => {
             setBack(c);
@@ -181,7 +218,7 @@ export default function CheckPill({
             sideLabel="back"
             onImageReady={(c) => {
               setBack(c);
-              check(front, c);
+              check(front, c, true);
             }}
             onCancel={() => setStage("result")}
           />
@@ -225,14 +262,23 @@ export default function CheckPill({
                         Letters on it: <span className="font-mono font-bold">{o.pill.imprint.replace(/;/g, " ")}</span>
                       </p>
                     )}
-                    <button onClick={() => setConfirmed(o)} className="mt-2 w-full py-3 bg-emerald-600 text-white font-bold rounded-xl">
+                    <button
+                      onClick={() => {
+                        setConfirmed(o);
+                        logScan({ outcome: "yours", drugName: o.pill.drugName, ndc: o.pill.ndc, confirmedByUser: true });
+                      }}
+                      className="mt-2 w-full py-3 bg-emerald-600 text-white font-bold rounded-xl"
+                    >
                       {o.pill.imprint ? "✓ The letters match — it's this one" : "✓ It looks exactly like this one"}
                     </button>
                   </div>
                 </div>
               ))}
               <button
-                onClick={() => setResult({ kind: "none", closest: null })}
+                onClick={() => {
+                  setResult({ kind: "none", closest: null });
+                  logScan({ outcome: "not-yours", drugName: null, ndc: undefined, confirmedByUser: true });
+                }}
                 className="w-full py-3 bg-slate-100 text-slate-800 font-bold rounded-xl"
               >
                 It&apos;s neither of these
@@ -285,6 +331,7 @@ export default function CheckPill({
                 }
                 setConfirmed(null);
                 setResult({ kind: "none", closest: null });
+                logScan({ outcome: "not-yours", drugName: null, ndc: undefined, confirmedByUser: true });
               }}
               className="w-full py-2 text-base text-slate-600 underline"
             >

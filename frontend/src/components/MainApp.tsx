@@ -8,6 +8,7 @@ import TodayView from "@/components/TodayView";
 import CheckPill from "@/components/CheckPill";
 import AddMedicine from "@/components/AddMedicine";
 import MyMedicines from "@/components/MyMedicines";
+import ScanHistory from "@/components/ScanHistory";
 import { useReminders } from "@/components/useReminders";
 import { speak } from "@/components/AudioAlert";
 import {
@@ -251,7 +252,7 @@ export default function MainApp({ onResetSession }: MainAppProps) {
 
             {meds.length === 0 ? (
               <div className="p-12 text-center border-2 border-dashed border-slate-200 rounded-2xl bg-white shadow-sm text-slate-400">
-                No medicines added yet. Add them on the Today tab or by scanning a pill.
+                No medicines added yet. Add them on the My meds tab.
               </div>
             ) : beersFlags.length === 0 && interactionFlags.length === 0 && duplicateFlags.length === 0 ? (
               <div className="p-5 bg-emerald-50 border border-emerald-200 rounded-2xl shadow-sm">
@@ -309,6 +310,8 @@ export default function MainApp({ onResetSession }: MainAppProps) {
               These checks don&apos;t account for dose, duration, diagnosis or allergies, and are not a substitute for
               pharmacist or clinician review.
             </p>
+
+            <ScanHistory />
           </div>
         )}
 

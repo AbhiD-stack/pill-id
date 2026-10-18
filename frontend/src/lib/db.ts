@@ -65,18 +65,40 @@ export interface DoseRecord {
   at: number;
 }
 
+// One pill scan and what the safety checks said about it at the time
+// (Check a pill, or Identify). Kept on this device; shown in Safety.
+export type ScanOutcome = "yours" | "check" | "not-yours" | "identified";
+export interface ScanSafety {
+  beers: { category: string; risk_level: string; rationale: string; recommendation: string } | null;
+  interactions: { drug_a: string; drug_b: string; severity: string; description: string }[];
+  duplicates: { ingredient: string; drugs: string[] }[];
+}
+export interface ScanRecord {
+  id: string;
+  at: number;
+  source: "check" | "identify";
+  outcome: ScanOutcome;
+  drugName: string | null; // the medicine it was (or most likely was); null if unknown
+  ndc?: string;
+  confirmedByUser: boolean; // the patient picked it (vs. the app deciding)
+  photoDataUrl: string; // small copy of the scan photo
+  safety: ScanSafety | null; // null when there's no medicine to check
+  safetyNote?: string; // why there are no safety results
+}
+
 interface PillIDDb extends DBSchema {
   schedule: { key: string; value: ScheduleEntry; indexes: { "by-bucket": string } };
   logs: { key: string; value: LogEntry; indexes: { "by-time": number } };
   referencePills: { key: string; value: ReferencePill };
   doses: { key: string; value: DoseRecord; indexes: { "by-date": string } };
+  scans: { key: string; value: ScanRecord; indexes: { "by-time": number } };
 }
 
 let dbPromise: Promise<IDBPDatabase<PillIDDb>> | null = null;
 
 function getDb() {
   if (!dbPromise) {
-    dbPromise = openDB<PillIDDb>("pill-id-v2", 3, {
+    dbPromise = openDB<PillIDDb>("pill-id-v2", 4, {
       upgrade(db, oldVersion) {
         if (oldVersion < 1) {
           const schedule = db.createObjectStore("schedule", { keyPath: "id" });
@@ -90,6 +112,10 @@ function getDb() {
         if (oldVersion < 3) {
           const doses = db.createObjectStore("doses", { keyPath: "id" });
           doses.createIndex("by-date", "date");
+        }
+        if (oldVersion < 4) {
+          const scans = db.createObjectStore("scans", { keyPath: "id" });
+          scans.createIndex("by-time", "at");
         }
       },
     });
@@ -241,4 +267,29 @@ export async function setDoseStatus(entry: ScheduleEntry, date: string, status: 
 export async function getDoses(fromDate: string, toDate: string): Promise<DoseRecord[]> {
   const db = await getDb();
   return db.getAllFromIndex("doses", "by-date", IDBKeyRange.bound(fromDate, toDate));
+}
+
+// ── Scan history ──────────────────────────────────────────────────────────
+const MAX_SCANS = 500;
+
+export async function putScan(scan: ScanRecord) {
+  const db = await getDb();
+  await db.put("scans", scan);
+  const keys = await db.getAllKeysFromIndex("scans", "by-time");
+  for (const k of keys.slice(0, Math.max(0, keys.length - MAX_SCANS))) await db.delete("scans", k);
+}
+
+export async function getScans(): Promise<ScanRecord[]> {
+  const db = await getDb();
+  return (await db.getAll("scans")).sort((a, b) => b.at - a.at);
+}
+
+export async function deleteScan(id: string) {
+  const db = await getDb();
+  await db.delete("scans", id);
+}
+
+export async function clearScans() {
+  const db = await getDb();
+  await db.clear("scans");
 }

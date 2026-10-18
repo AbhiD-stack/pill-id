@@ -1,11 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { contributePhoto, embedCanvases, identifyPill, type Embedded, type PillMatch, type SearchResult } from "@/lib/api";
+import { contributePhoto, embedCanvases, type Embedded, type SearchResult } from "@/lib/api";
 import { addReferencePill, setMedicationTimes, type TimeOfDay } from "@/lib/db";
 import ImageCapture from "./ImageCapture";
 import PillSearchPanel from "./PillSearchPanel";
-import PillThumb from "./PillThumb";
 import { TimePicker } from "./AddToMedsButton";
 import { vibrate } from "./AudioAlert";
 
@@ -14,8 +13,7 @@ type Chosen = { drugName: string; label: string; ndc?: string; imprint?: string;
 
 // Setting up one medicine, ideally with a caregiver or pharmacist and the
 // pharmacy bottle in hand: photograph the pill (both sides), say which
-// medicine it is (suggested from the photo, confirmed against the bottle),
-// and when it's taken. The photo becomes the reference every later check
+// medicine it is (searched by the name on the bottle), and when it's taken. The photo becomes the reference every later check
 // is compared with.
 export default function AddMedicine({
   initialFront = null,
@@ -31,7 +29,6 @@ export default function AddMedicine({
   const [step, setStep] = useState<Step>(initialFront ? "name" : "front");
   const [front, setFront] = useState<HTMLCanvasElement | null>(initialFront);
   const [back, setBack] = useState<HTMLCanvasElement | null>(initialBack);
-  const [suggestions, setSuggestions] = useState<PillMatch[] | null>(null);
   const [embeddings, setEmbeddings] = useState<Embedded | null>(null);
   const [chosen, setChosen] = useState<Chosen | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -41,25 +38,18 @@ export default function AddMedicine({
   // explained on screen, and easy to turn off.
   const [share, setShare] = useState(true);
 
-  // As soon as the photos are in: suggestions from the photo (the catalog
-  // model) and the embeddings the saved pill will be matched with.
+  // As soon as the photos are in: the embeddings the saved pill will be
+  // matched with.
   useEffect(() => {
     if (step !== "name" || !front || embeddings) return;
     let cancelled = false;
     (async () => {
       try {
-        const r = await identifyPill(front, 5, back, null);
-        if (cancelled) return;
-        setSuggestions(r.matches);
-        if (r.queryEmbeddings?.length) setEmbeddings({ embeddings: r.queryEmbeddings, cohort: r.queryCohort });
-        else setEmbeddings(await embedCanvases(front, back));
+        const e = await embedCanvases(front, back);
+        if (!cancelled) setEmbeddings(e);
       } catch (err) {
-        console.error("Suggestions failed:", err);
-        if (cancelled) return;
-        setSuggestions([]);
-        try {
-          setEmbeddings(await embedCanvases(front, back));
-        } catch {
+        console.error("Preparing the photo failed:", err);
+        if (!cancelled) {
           setError("Can't reach the Pill ID server, so this photo can't be prepared for checking. You can still save it and it will be prepared later.");
         }
       }
@@ -73,7 +63,6 @@ export default function AddMedicine({
     setStep("front");
     setFront(null);
     setBack(null);
-    setSuggestions(null);
     setEmbeddings(null);
     setChosen(null);
     setError(null);
@@ -163,7 +152,7 @@ export default function AddMedicine({
 
       {step === "name" && front && (
         <div className="space-y-5">
-          {header(2, "Which medicine is it?", "Check the name on the pharmacy bottle and pick the matching one.")}
+          {header(2, "Which medicine is it?", "Type the name from the pharmacy bottle and pick the matching one.")}
           <div className="flex gap-3">
             <img src={front.toDataURL()} alt="Front of the pill" className="w-24 h-24 rounded-xl border border-slate-200 object-contain bg-white" />
             {back && <img src={back.toDataURL()} alt="Back of the pill" className="w-24 h-24 rounded-xl border border-slate-200 object-contain bg-white" />}
@@ -171,45 +160,7 @@ export default function AddMedicine({
           {error && <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-3">{error}</p>}
 
           <section className="space-y-2">
-            <h3 className="text-lg font-bold text-slate-900">Suggestions from the photo</h3>
-            {suggestions === null ? (
-              <p className="text-base text-indigo-700 animate-pulse">Looking at the photo…</p>
-            ) : suggestions.length === 0 ? (
-              <p className="text-sm text-slate-500">No suggestions. Search by the name on the bottle below.</p>
-            ) : (
-              <div className="space-y-2">
-                {suggestions.map((m) => (
-                  <div key={m.label} className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-2xl">
-                    <PillThumb url={m.reference_image_url} kind={m.reference_image_kind} alt={m.drug_name || m.label} className="w-16 h-16" />
-                    <div className="min-w-0 flex-1">
-                      <p className="font-bold text-slate-900 break-words">{m.drug_name || `Name not on file (NDC ${m.ndc || m.label})`}</p>
-                      <p className="text-xs text-slate-500 break-words">
-                        {[m.imprint && `Imprint ${m.imprint}`, m.color, m.shape].filter(Boolean).join(" · ")}
-                      </p>
-                    </div>
-                    <button
-                      onClick={() =>
-                        choose({
-                          drugName: m.drug_name || `NDC ${m.ndc || m.label}`,
-                          label: m.label,
-                          ndc: m.ndc ?? undefined,
-                          imprint: m.imprint ?? undefined,
-                          color: m.color ?? undefined,
-                          shape: m.shape ?? undefined,
-                        })
-                      }
-                      className="shrink-0 px-3 py-2.5 bg-emerald-600 text-white font-bold rounded-xl"
-                    >
-                      ✓ This one
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="space-y-2">
-            <h3 className="text-lg font-bold text-slate-900">Or search the name on the bottle</h3>
+            <h3 className="text-lg font-bold text-slate-900">Search the name on the bottle</h3>
             <PillSearchPanel
               compact
               defaultMode="name"

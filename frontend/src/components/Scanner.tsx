@@ -1,9 +1,10 @@
 // src/components/Scanner.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { identifyPill, readImprint, submitFeedback, type PillLook, type PillMatch, type SearchResult } from "@/lib/api";
-import { addReferencePill, getMedications, getReferencePills } from "@/lib/db";
+import { addReferencePill, deleteScan, getMedications, getReferencePills, type ScanRecord } from "@/lib/db";
+import { saveScan, thumbFromUrl } from "@/lib/scanLog";
 import { scoreMyPills, judgeMyPillMatch, type MyPillVerdict } from "@/lib/myPills";
 import { fullSafetyCheck } from "@/lib/safety";
 import { speak, vibrate } from "./AudioAlert";
@@ -324,6 +325,10 @@ function likeness(score: number): { text: string; tone: string } {
 // A listing with no drug name on file shows that plainly, never a bare code.
 const nameOf = (m: PillMatch) => m.drug_name || `Name not on file (NDC ${m.ndc || m.label})`;
 
+function lookOf(m: PillMatch) {
+  return { imprint: m.imprint, color: m.color, shape: m.shape, scoreMarks: m.score_marks };
+}
+
 function describe(m: PillMatch): string {
   return [m.imprint && `Imprint ${m.imprint}`, m.color, m.shape].filter(Boolean).join(" · ");
 }
@@ -386,8 +391,32 @@ function ResultsView({
     }
   }
 
+  // The picked pill goes into the scan history (Safety tab); going back to
+  // the matches takes it out again.
+  const scanLog = useRef<Promise<ScanRecord | null>>(Promise.resolve(null));
+  function logChoice(m: PillMatch | null) {
+    scanLog.current = scanLog.current
+      .then(async (prev) => {
+        if (prev) await deleteScan(prev.id);
+        if (!m) return null;
+        return saveScan({
+          source: "identify",
+          outcome: "identified",
+          drugName: m.drug_name,
+          ndc: m.ndc ?? undefined,
+          confirmedByUser: true,
+          photoDataUrl: previewUrl ? await thumbFromUrl(previewUrl) : "",
+        });
+      })
+      .catch((err) => {
+        console.error("Updating the scan history failed (non-fatal):", err);
+        return null;
+      });
+  }
+
   function choose(m: PillMatch) {
     setChosen(m);
+    logChoice(m);
     setComparing(null);
     setNotHere(false);
     vibrate([60, 40, 60]);
@@ -455,7 +484,7 @@ function ResultsView({
             <PhotoBox label="Your photo" src={previewUrl} />
             <div className="text-center">
               <p className="text-xs font-bold text-slate-500 mb-1">Reference</p>
-              <PillThumb url={chosen.reference_image_url} kind={chosen.reference_image_kind} alt={nameOf(chosen)} className="w-full aspect-square" />
+              <PillThumb url={chosen.reference_image_url} kind={chosen.reference_image_kind} alt={nameOf(chosen)} look={lookOf(chosen)} className="w-full aspect-square" />
             </div>
           </div>
           <div>
@@ -511,7 +540,13 @@ function ResultsView({
         <button onClick={onRetake} className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white text-lg font-bold rounded-2xl">
           📷 Scan another pill
         </button>
-        <button onClick={() => setChosen(null)} className="w-full text-base text-indigo-700 underline">
+        <button
+          onClick={() => {
+            setChosen(null);
+            logChoice(null);
+          }}
+          className="w-full text-base text-indigo-700 underline"
+        >
           That&apos;s not my pill — go back to the matches
         </button>
       </div>
@@ -703,7 +738,7 @@ function MatchCard({
     <div className={`rounded-2xl border-2 bg-white p-4 shadow-sm space-y-3 ${imprintMatches ? "border-emerald-300" : "border-slate-200"}`}>
       <div className="flex gap-4">
         <button onClick={onCompare} className="shrink-0 relative" aria-label={`Compare ${nameOf(m)} with your photo`}>
-          <PillThumb url={m.reference_image_url} kind={m.reference_image_kind} alt={nameOf(m)} className="w-28 h-28" />
+          <PillThumb url={m.reference_image_url} kind={m.reference_image_kind} alt={nameOf(m)} look={lookOf(m)} className="w-28 h-28" />
           <span className="absolute -top-2 -left-2 w-7 h-7 rounded-full bg-slate-800 text-white text-sm font-bold flex items-center justify-center">
             {rank}
           </span>
@@ -780,7 +815,7 @@ function CompareModal({
           <PhotoBox label="Your photo" src={previewUrl} />
           <div className="text-center">
             <p className="text-xs font-bold text-slate-500 mb-1">Match {index + 1}</p>
-            <PillThumb url={m.reference_image_url} kind={m.reference_image_kind} alt={nameOf(m)} className="w-full aspect-square" />
+            <PillThumb url={m.reference_image_url} kind={m.reference_image_kind} alt={nameOf(m)} look={lookOf(m)} className="w-full aspect-square" />
           </div>
         </div>
         <div>

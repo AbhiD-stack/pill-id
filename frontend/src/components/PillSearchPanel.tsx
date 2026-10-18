@@ -303,6 +303,7 @@ export default function PillSearchPanel({
                 url={r.reference_image_url}
                 kind={r.reference_image_kind}
                 alt={r.name || r.label}
+                look={{ imprint: r.imprint, color: r.color, shape: r.shape, scoreMarks: r.score_marks }}
               />
               <div className="min-w-0 flex-1">
                 <p className="font-bold text-slate-900 text-sm truncate">{r.name || `Name not on file (NDC ${r.ndc || r.label})`}</p>
