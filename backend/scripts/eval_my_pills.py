@@ -203,9 +203,11 @@ def main() -> int:
                 household[p], left[p] = setup(p)
             q1, q2 = two(left[meds[0]])
             trials.append((household, q1, q2, meds[0], kind))
-            other = rng.choice([p for p in pills if p not in household])
-            q1, q2 = two(by_pill[other])
-            trials.append((household, q1, q2, None, kind))
+            # Other people's pills: the error that matters most, so 3x the scans
+            # (rates near 0.1% need many scans to be trustworthy).
+            for other in rng.sample([p for p in pills if p not in household], 3):
+                q1, q2 = two(by_pill[other])
+                trials.append((household, q1, q2, None, kind))
 
     E = emb
     MU, SD = cohort[:, 0], cohort[:, 1]
@@ -264,8 +266,9 @@ def main() -> int:
     # A setting only counts as useful if at least this share of scans of the
     # patient's own pills get a confident, correct answer (otherwise almost
     # everything would be "check the letters").
-    MIN_USEFUL = 0.40
-    BARS = ((0.001, 0.001, 0.01), (0.0025, 0.0025, 0.02), (0.005, 0.005, 0.03), (0.01, 0.01, 0.05))
+    MIN_USEFUL = 0.30
+    BARS = ((0.00025, 0.001, 0.01), (0.0005, 0.001, 0.01), (0.001, 0.001, 0.01),
+            (0.0025, 0.0025, 0.02), (0.005, 0.005, 0.03), (0.01, 0.01, 0.05))
     print("\n=== My Pills on real phone photos ===")
     results = {}
     for mode in ("raw", "snorm"):
@@ -286,7 +289,7 @@ def main() -> int:
             top1 = np.mean(G[:, 2])
             if (mode, photos) in results:
                 b, best, *_ = results[(mode, photos)]
-                print(f"  {name:32} right first {top1:.1%} | safety level {b + 1} of 4 | confident & right {best[0]:.1%}")
+                print(f"  {name:32} right first {top1:.1%} | safety level {b + 1} of {len(BARS)} | confident & right {best[0]:.1%}")
             else:
                 print(f"  {name:32} right first {top1:.1%} | no safe setting found")
     if not results:
@@ -296,7 +299,7 @@ def main() -> int:
     # Winner: strictest safety bar met, then most confident-and-right answers.
     (mode, photos), (b, best, G, I, kinds) = min(results.items(), key=lambda kv: (kv[1][0], -kv[1][1][0]))
     right, t_reject, t_match, margin, caught, wrong = best
-    print(f"\n  Best: {'normalized' if mode == 'snorm' else 'plain'} score, {photos} photo(s). Safety level {b + 1} of 4 met: "
+    print(f"\n  Best: {'normalized' if mode == 'snorm' else 'plain'} score, {photos} photo(s). Safety level {b + 1} of {len(BARS)} met: "
           f"others' pills confirmed <= {BARS[b][0]:.2%}, own pill confirmed as the wrong one <= {BARS[b][1]:.2%}, "
           f"own pill called 'not yours' <= {BARS[b][2]:.0%}.")
     for kind in ("normal", "lookalike"):
@@ -316,6 +319,16 @@ def main() -> int:
     print(f"    caught (\"Not one of your medicines\"):     {caught:.1%}")
     print(f"    sent to \"check the letters\":                {1 - caught - np.mean((I[:, 0] >= t_match) & (I[:, 1] >= margin)):.1%}")
     print(f"    wrongly confirmed as one of theirs:        {np.mean((I[:, 0] >= t_match) & (I[:, 1] >= margin)):.2%}")
+    # The trade-off for the chosen scoring: stricter limits on other people's
+    # pills cost confident answers (more "check the letters").
+    print("\n  Trade-off (same scoring): limit on other people's pills confirmed -> result")
+    for bar in BARS[:3]:
+        alt = search(G, I, bar)
+        if alt:
+            print(f"    <= {bar[0]:.3%}: confident & right {alt[0]:.1%}, others' pills caught as 'not yours' {alt[4]:.1%}, "
+                  f"confirmed {alt[5]:.3%}")
+        else:
+            print(f"    <= {bar[0]:.3%}: not reachable")
     print("\nRecommended app settings (paste to Claude):")
     print(f"  MY_PILLS_MODE={mode}  MY_PILLS_PHOTOS={photos}  MY_PILLS_REJECT={t_reject:.4f}  "
           f"MY_PILLS_MATCH={t_match:.4f}  MY_PILLS_MARGIN={margin:.4f}")
