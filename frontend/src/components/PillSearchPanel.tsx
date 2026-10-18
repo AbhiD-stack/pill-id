@@ -1,12 +1,25 @@
 "use client";
 
 import { useState } from "react";
+import { getCustomDrugs } from "@/lib/db";
+import CustomDrugForm, { customToResult } from "./CustomDrugForm";
 import { searchByName, searchByAppearance, type SearchResult } from "@/lib/api";
 import PillThumb from "./PillThumb";
 import AddToMedsButton from "./AddToMedsButton";
 import { SHAPE_OPTIONS, COLOR_OPTIONS, SCORE_MARK_OPTIONS, SCORE_MARK_LABELS, shapeIconPath, scoreMarkLines } from "@/lib/pillAppearance";
 
 type Mode = "name" | "appearance";
+
+const norm = (s: string | null | undefined) => (s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+// The user's own entries that fit a search, shown first.
+async function matchingCustom(test: (r: SearchResult) => boolean): Promise<SearchResult[]> {
+  try {
+    return (await getCustomDrugs()).map(customToResult).filter(test);
+  } catch {
+    return [];
+  }
+}
 
 export function ShapeIcon({ shape, size = 28 }: { shape: string; size?: number }) {
   const icon = shapeIconPath(shape);
@@ -63,15 +76,20 @@ export default function PillSearchPanel({
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
+  const [adding, setAdding] = useState(false);
 
   async function runNameSearch(e: React.FormEvent) {
     e.preventDefault();
     if (!nameQuery.trim()) return;
     setStatus("loading");
+    setAdding(false);
+    const q = nameQuery.trim().toLowerCase();
+    const mine = await matchingCustom((r) => (r.name ?? "").toLowerCase().includes(q));
     try {
-      setResults(await searchByName(nameQuery.trim(), nameImprint.trim() || undefined));
+      setResults([...mine, ...(await searchByName(nameQuery.trim(), nameImprint.trim() || undefined))]);
       setStatus("idle");
     } catch (err: any) {
+      setResults(mine);
       setErrorMsg(err?.message || String(err));
       setStatus("error");
     }
@@ -82,17 +100,27 @@ export default function PillSearchPanel({
     const imprint = [imprintSide1, imprintSide2].filter((s) => s.trim()).join(" ");
     if (colors.length === 0 && !shape && !imprint && !scoreMarks) return;
     setStatus("loading");
+    setAdding(false);
+    const mine = await matchingCustom(
+      (r) =>
+        colors.every((c) => (r.color ?? "").toUpperCase().includes(c)) &&
+        (!shape || r.shape === shape) &&
+        (!scoreMarks || r.score_marks === scoreMarks) &&
+        (!imprint || norm(r.imprint).includes(norm(imprint))),
+    );
     try {
-      setResults(
-        await searchByAppearance({
+      setResults([
+        ...mine,
+        ...(await searchByAppearance({
           color: colors.length > 0 ? colors.join(",") : undefined,
           shape: shape ?? undefined,
           imprint: imprint || undefined,
           scoreMarks: scoreMarks ?? undefined,
-        })
-      );
+        })),
+      ]);
       setStatus("idle");
     } catch (err: any) {
+      setResults(mine);
       setErrorMsg(err?.message || String(err));
       setStatus("error");
     }
@@ -307,7 +335,11 @@ export default function PillSearchPanel({
               />
               <div className="min-w-0 flex-1">
                 <p className="font-bold text-slate-900 text-sm truncate">{r.name || `Name not on file (NDC ${r.ndc || r.label})`}</p>
-                <p className="text-[11px] text-slate-400 font-mono truncate">NDC: {r.ndc || "N/A"}</p>
+                {r.custom ? (
+                  <p className="text-[11px] font-semibold text-amber-800">Added by you · not in the FDA list</p>
+                ) : (
+                  <p className="text-[11px] text-slate-400 font-mono truncate">NDC: {r.ndc || "N/A"}</p>
+                )}
                 {r.also_sold_as && r.also_sold_as.length > 0 && (
                   <p className="text-[11px] text-slate-500 truncate" title={r.also_sold_as.join(", ")}>
                     Also sold as: {r.also_sold_as.join(", ")}
@@ -336,6 +368,37 @@ export default function PillSearchPanel({
             </div>
           ))}
         </div>
+      )}
+
+      {(results !== null || status === "error") && status !== "loading" && (
+        adding ? (
+          <CustomDrugForm
+            initialName={mode === "name" ? nameQuery.trim() : ""}
+            initialImprint={mode === "name" ? nameImprint.trim() : imprintSide1.trim()}
+            initialColors={mode === "appearance" ? colors : []}
+            initialShape={mode === "appearance" ? shape : null}
+            onCancel={() => setAdding(false)}
+            onSaved={(r) => {
+              setAdding(false);
+              if (onSelect) onSelect(r);
+              else {
+                setResults((rs) => [r, ...(rs ?? [])]);
+                setStatus("idle");
+              }
+            }}
+          />
+        ) : (
+          <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl text-center space-y-2">
+            <p className="text-base text-slate-700">Don&apos;t see your medicine?</p>
+            <button
+              type="button"
+              onClick={() => setAdding(true)}
+              className="w-full py-3 bg-white border-2 border-indigo-300 text-indigo-800 text-base font-bold rounded-xl"
+            >
+              + Add it yourself
+            </button>
+          </div>
+        )
       )}
     </div>
   );

@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import WelcomeNotice from "./WelcomeNotice";
 import Scanner from "@/components/Scanner";
 import PillSearchPanel from "@/components/PillSearchPanel";
-import TodayView from "@/components/TodayView";
+import CalendarView from "@/components/CalendarView";
 import CheckPill from "@/components/CheckPill";
 import AddMedicine from "@/components/AddMedicine";
 import MyMedicines from "@/components/MyMedicines";
@@ -172,7 +172,7 @@ export default function MainApp({ onResetSession }: MainAppProps) {
           <p className="text-base text-slate-700 mt-1">{reminders.due.meds.join(", ")}</p>
           <div className="grid grid-cols-3 gap-2 mt-3">
             <button onClick={() => setActiveTab("schedule")} className="col-span-2 py-3 bg-indigo-600 text-white font-bold rounded-xl">
-              Open Today
+              Open calendar
             </button>
             <button onClick={reminders.dismiss} className="py-3 bg-white border border-slate-300 font-bold rounded-xl">
               Later
@@ -229,7 +229,7 @@ export default function MainApp({ onResetSession }: MainAppProps) {
                 </button>
               </div>
             )}
-            <TodayView
+            <CalendarView
               onScan={() => { setActiveTab("meds"); setAdding({ front: null, back: null }); }}
               onManage={() => setActiveTab("meds")}
               onChanged={onMedsChanged}
@@ -408,8 +408,8 @@ export default function MainApp({ onResetSession }: MainAppProps) {
           aria-current={activeTab === "schedule" ? "page" : undefined}
           className={`flex flex-col items-center flex-1 py-1.5 transition ${activeTab === "schedule" ? "text-blue-600 font-semibold" : "text-slate-500 hover:text-slate-800"}`}
         >
-          <span className="text-xl">✅</span>
-          <span className="text-[11px] mt-0.5">Today</span>
+          <span className="text-xl">📅</span>
+          <span className="text-[11px] mt-0.5">Calendar</span>
         </button>
         <button
           onClick={() => { setActiveTab("meds"); setAdding(null); }}

@@ -70,7 +70,7 @@ export default function MyMedicines({ onAdd, onChanged }: { onAdd: () => void; o
                 <div className="min-w-0 flex-1">
                   <p className="text-lg font-bold text-slate-900 break-words">{r.drugName}</p>
                   <p className="text-sm text-slate-600">
-                    {r.med ? describePlan(r.med.plan) : "As needed"}
+                    {r.med ? `${r.med.amount ? `${r.med.amount} · ` : ""}${describePlan(r.med.plan)}` : "As needed"}
                   </p>
                   {photo?.imprint && (
                     <p className="text-sm text-slate-500">
@@ -92,9 +92,10 @@ export default function MyMedicines({ onAdd, onChanged }: { onAdd: () => void; o
                   <SchedulePicker
                     drugName={r.drugName}
                     initial={r.med?.plan ?? null}
+                    initialAmount={r.med?.amount}
                     saveLabel="Save"
-                    onSave={async (plan) => {
-                      await setMedicationPlan(r.drugName, r.ndc, plan);
+                    onSave={async (plan, amount) => {
+                      await setMedicationPlan(r.drugName, r.ndc, plan, amount);
                       setEditing(null);
                       refresh();
                     }}

@@ -148,7 +148,7 @@ export default function CheckPill({
 
   if (ready.length === 0) {
     return (
-      <div className="max-w-xl mx-auto space-y-4 text-center py-6">
+      <div className="w-full max-w-xl mx-auto space-y-4 text-center py-6">
         <p className="text-5xl">💊</p>
         <h2 className="text-2xl font-bold text-slate-900">Set up your medicines first</h2>
         <p className="text-base text-slate-600">
@@ -169,7 +169,7 @@ export default function CheckPill({
   }
 
   return (
-    <div className="max-w-xl mx-auto pb-12">
+    <div className="w-full max-w-xl mx-auto pb-12">
       {stage === "front" && (
         <>
           <div className="mb-4">

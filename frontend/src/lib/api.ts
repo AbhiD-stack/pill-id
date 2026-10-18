@@ -59,6 +59,7 @@ export type SearchResult = {
   reference_image_url: string | null;
   reference_image_kind?: ReferenceImageKind;
   match_count?: number;
+  custom?: boolean; // typed in by the user, not from the FDA list
 };
 
 const apiBase = process.env.NEXT_PUBLIC_SAME_ORIGIN

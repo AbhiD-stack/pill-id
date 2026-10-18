@@ -477,7 +477,7 @@ function ResultsView({
   // ---- After the user picked their pill -------------------------------
   if (chosen) {
     return (
-      <div className="space-y-5 max-w-xl mx-auto pb-12">
+      <div className="w-full space-y-5 max-w-xl mx-auto pb-12">
         <div className="bg-emerald-50 border-2 border-emerald-400 rounded-2xl p-5 space-y-4">
           <p className="text-sm font-bold text-emerald-800 uppercase tracking-wider">✓ Your pill</p>
           <div className="grid grid-cols-2 gap-3">
@@ -556,7 +556,7 @@ function ResultsView({
   // ---- Choosing ---------------------------------------------------------
   const visible = showMore ? [...first, ...more] : first;
   return (
-    <div className="space-y-5 max-w-xl mx-auto pb-12">
+    <div className="w-full space-y-5 max-w-xl mx-auto pb-12">
       <div className="flex items-center gap-4 bg-white border border-slate-200 rounded-2xl p-4">
         <PhotoBox label="Your photo" src={previewUrl} className="w-24" />
         <div className="min-w-0">

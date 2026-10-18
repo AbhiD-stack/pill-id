@@ -17,6 +17,11 @@ const DISPLAY_SIZE = 320;
 const RESOLUTION_SCALE = 5;
 const BUFFER_SIZE = DISPLAY_SIZE * RESOLUTION_SCALE;
 
+// Crop box and photo position are kept as fractions (0-1) of the preview
+// square, never in screen pixels: the square's on-screen size changes with
+// large-text mode, phone width and zoom, and pixel positions measured
+// against an assumed size put the box off-center and cropped the wrong
+// part of the photo.
 type Rect = { x: number; y: number; w: number; h: number };
 type DragMode = "move" | "n" | "s" | "e" | "w" | "nw" | "ne" | "sw" | "se";
 
@@ -70,10 +75,10 @@ export default function ImageCapture({
   // Where the actual photo content sits within the DISPLAY_SIZE square (the
   // rest is letterbox) -- used to give a sensible default crop and to stop
   // the crop box from being draggable into the empty letterbox area.
-  const [imageRect, setImageRect] = useState<Rect>({ x: 0, y: 0, w: DISPLAY_SIZE, h: DISPLAY_SIZE });
+  const [imageRect, setImageRect] = useState<Rect>({ x: 0, y: 0, w: 1, h: 1 });
   // "move" drags the whole box; "nw"/"ne"/"sw"/"se" resizes from that corner.
   const [dragMode, setDragMode] = useState<DragMode | null>(null);
-  const dragStartRef = useRef({ pointerX: 0, pointerY: 0, box: { x: 0, y: 0, w: 0, h: 0 } });
+  const dragStartRef = useRef({ pointerX: 0, pointerY: 0, size: DISPLAY_SIZE, box: { x: 0, y: 0, w: 0, h: 0 } });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -115,12 +120,15 @@ export default function ImageCapture({
       // display-space -- otherwise the crop box's clamp bounds go stale
       // the moment someone rotates a non-square photo.
       const visualFit = rotatedRect(fit, rotation, BUFFER_SIZE);
-      setImageRect({
-        x: visualFit.x / RESOLUTION_SCALE,
-        y: visualFit.y / RESOLUTION_SCALE,
-        w: visualFit.w / RESOLUTION_SCALE,
-        h: visualFit.h / RESOLUTION_SCALE,
-      });
+      const rect = {
+        x: visualFit.x / BUFFER_SIZE,
+        y: visualFit.y / BUFFER_SIZE,
+        w: visualFit.w / BUFFER_SIZE,
+        h: visualFit.h / BUFFER_SIZE,
+      };
+      setImageRect(rect);
+      // New photo or a rotation: the crop starts as the whole photo.
+      setCropBox(rect);
     };
     img.src = previewSrc;
   }, [previewSrc, rotation, mode]);
@@ -133,20 +141,6 @@ export default function ImageCapture({
     const reader = new FileReader();
     reader.onload = (evt) => {
       const dataUrl = evt.target?.result as string;
-
-      // Figure out the photo's real aspect ratio up front so the default
-      // crop box matches the whole photo (not a generic square that may
-      // include letterbox or miss part of a non-square image) -- this
-      // runs once per new image, independent of the rotation-redraw effect
-      // above, so rotating afterward doesn't reset a crop the user already
-      // adjusted.
-      const probe = new Image();
-      probe.onload = () => {
-        const fit = containFit(probe.naturalWidth, probe.naturalHeight, DISPLAY_SIZE);
-        setImageRect(fit);
-        setCropBox({ ...fit });
-      };
-      probe.src = dataUrl;
 
       setPreviewSrc(dataUrl);
       setMode("preview");
@@ -165,6 +159,9 @@ export default function ImageCapture({
     dragStartRef.current = {
       pointerX: e.clientX,
       pointerY: e.clientY,
+      // The preview's real on-screen size right now, to turn finger
+      // movement into fractions of the photo.
+      size: previewContainerRef.current?.clientWidth || DISPLAY_SIZE,
       box: { ...cropBox },
     };
     setDragMode(mode);
@@ -178,10 +175,10 @@ export default function ImageCapture({
     const handlePointerMove = (e: PointerEvent) => {
       if (!dragMode) return;
 
-      const { pointerX, pointerY, box } = dragStartRef.current;
-      const dx = e.clientX - pointerX;
-      const dy = e.clientY - pointerY;
-      const minSize = 30;
+      const { pointerX, pointerY, size, box } = dragStartRef.current;
+      const dx = (e.clientX - pointerX) / size;
+      const dy = (e.clientY - pointerY) / size;
+      const minSize = 30 / size;
       // Clamp to the actual photo content, not the full square -- stops the
       // crop box from being draggable into the empty letterbox area around
       // a non-square photo, which used to be part of what made cropping
@@ -253,15 +250,13 @@ export default function ImageCapture({
 
     const adjustmentCount = Math.abs(rotation / 90);
 
-    // cropBox is tracked in display-space (CSS) pixels, but the canvas
-    // buffer is rendered at RESOLUTION_SCALE x that -- scale up to read the
-    // full-resolution pixels instead of the tiny display-space crop that
-    // was being sent before (which threw away most of a real phone
-    // photo's actual resolution).
-    const srcX = cropBox.x * RESOLUTION_SCALE;
-    const srcY = cropBox.y * RESOLUTION_SCALE;
-    const srcW = cropBox.w * RESOLUTION_SCALE;
-    const srcH = cropBox.h * RESOLUTION_SCALE;
+    // cropBox is in fractions of the preview square; the canvas buffer is
+    // BUFFER_SIZE pixels on a side, so this reads the full-resolution
+    // pixels of exactly the region shown inside the yellow box.
+    const srcX = Math.round(cropBox.x * BUFFER_SIZE);
+    const srcY = Math.round(cropBox.y * BUFFER_SIZE);
+    const srcW = Math.max(1, Math.round(cropBox.w * BUFFER_SIZE));
+    const srcH = Math.max(1, Math.round(cropBox.h * BUFFER_SIZE));
 
     const croppedCanvas = document.createElement("canvas");
     croppedCanvas.width = srcW;
@@ -344,7 +339,7 @@ export default function ImageCapture({
           <div className="flex justify-center">
             <div
               ref={previewContainerRef}
-              className="relative w-80 h-80 bg-slate-900 rounded-lg overflow-hidden border-2 border-slate-700"
+              className="relative w-full max-w-80 aspect-square bg-slate-900 rounded-lg overflow-hidden border-2 border-slate-700"
             >
               <canvas
                 ref={previewCanvasRef}
@@ -362,10 +357,10 @@ export default function ImageCapture({
                 onPointerDown={beginDrag("move")}
                 className="absolute border-[3px] border-yellow-400 bg-yellow-400/10 cursor-move"
                 style={{
-                  left: `${cropBox.x}px`,
-                  top: `${cropBox.y}px`,
-                  width: `${cropBox.w}px`,
-                  height: `${cropBox.h}px`,
+                  left: `${cropBox.x * 100}%`,
+                  top: `${cropBox.y * 100}%`,
+                  width: `${cropBox.w * 100}%`,
+                  height: `${cropBox.h * 100}%`,
                   touchAction: "none",
                 }}
               >

@@ -10,7 +10,7 @@ import SchedulePicker from "./SchedulePicker";
 import { vibrate } from "./AudioAlert";
 
 type Step = "front" | "back" | "name" | "times" | "done";
-type Chosen = { drugName: string; label: string; ndc?: string; imprint?: string; color?: string; shape?: string };
+type Chosen = { drugName: string; label: string; ndc?: string; imprint?: string; color?: string; shape?: string; custom?: boolean };
 
 // Setting up one medicine, ideally with a caregiver or pharmacist and the
 // pharmacy bottle in hand: photograph the pill (both sides), say which
@@ -69,7 +69,7 @@ export default function AddMedicine({
     setError(null);
   }
 
-  async function save(plan: Frequency | null) {
+  async function save(plan: Frequency | null, amount?: string) {
     if (!front || !chosen || saving) return;
     setSaving(true);
     try {
@@ -83,8 +83,9 @@ export default function AddMedicine({
         embeddings: embeddings?.embeddings,
         cohort: embeddings?.cohort ?? undefined,
       });
-      if (plan) await setMedicationPlan(chosen.drugName, chosen.ndc, plan);
-      if (share) {
+      if (plan) await setMedicationPlan(chosen.drugName, chosen.ndc, plan, amount);
+      // A medicine the user typed in isn't a confirmed catalog pill: never shared.
+      if (share && !chosen.custom) {
         // Best-effort, in the background: never blocks or fails the setup.
         contributePhoto(front, back, chosen.label).catch((err) => console.error("Sharing the photo failed (non-fatal):", err));
       }
@@ -113,7 +114,7 @@ export default function AddMedicine({
   );
 
   return (
-    <div className="max-w-xl mx-auto pb-12">
+    <div className="w-full max-w-xl mx-auto pb-12">
       {added.length > 0 && step !== "done" && (
         <p className="mb-3 text-sm text-emerald-700 font-semibold">✓ Added so far: {added.join(", ")}</p>
       )}
@@ -174,6 +175,7 @@ export default function AddMedicine({
                   imprint: r.imprint ?? undefined,
                   color: r.color ?? undefined,
                   shape: r.shape ?? undefined,
+                  custom: r.custom,
                 })
               }
             />
@@ -188,7 +190,8 @@ export default function AddMedicine({
         <div className="space-y-4">
           {header(3, `When do you take ${chosen.drugName}?`)}
           {error && <p className="text-sm text-red-800 bg-red-50 border border-red-200 rounded-xl p-3">{error}</p>}
-          <SchedulePicker drugName={chosen.drugName} initial={null} saveLabel={saving ? "Saving…" : "Save this medicine"} onSave={(p) => save(p)} />
+          <SchedulePicker drugName={chosen.drugName} initial={null} saveLabel={saving ? "Saving…" : "Save this medicine"} onSave={(p, a) => save(p, a)} />
+          {!chosen.custom && (
           <label className="flex items-start gap-3 p-3 bg-slate-50 border border-slate-200 rounded-xl">
             <input type="checkbox" checked={share} onChange={(e) => setShare(e.target.checked)} className="mt-1 w-6 h-6 shrink-0" />
             <span className="text-sm text-slate-700">
@@ -196,6 +199,7 @@ export default function AddMedicine({
               photo and the medicine are shared, never your name or your other medicines.
             </span>
           </label>
+          )}
           <button
             onClick={() => save(null)}
             disabled={saving}

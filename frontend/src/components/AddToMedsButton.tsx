@@ -18,12 +18,14 @@ export default function AddToMedsButton({
 }) {
   const [open, setOpen] = useState(false);
   const [current, setCurrent] = useState<Frequency | null>(null);
+  const [currentAmount, setCurrentAmount] = useState<string | undefined>();
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     getMedications().then((meds) => {
       const m = meds.find((x) => x.key === medKey(drugName, ndc ?? undefined));
       setCurrent(m ? m.plan : null);
+      setCurrentAmount(m?.amount);
     });
   }, [drugName, ndc, saved]);
 
@@ -49,9 +51,10 @@ export default function AddToMedsButton({
       <SchedulePicker
         drugName={drugName}
         initial={current}
+        initialAmount={currentAmount}
         saveLabel={current ? "Save" : "Add to my medicines"}
-        onSave={async (plan) => {
-          await setMedicationPlan(drugName, ndc ?? undefined, plan);
+        onSave={async (plan, amount) => {
+          await setMedicationPlan(drugName, ndc ?? undefined, plan, amount);
           vibrate([60, 40, 60]);
           setSaved(true);
           setOpen(false);

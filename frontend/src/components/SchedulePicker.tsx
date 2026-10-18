@@ -22,6 +22,7 @@ const CHOICES: { key: Choice; label: string }[] = [
 ];
 
 const INTERVALS = [30, 60, 120, 180, 240, 360, 480, 720];
+const AMOUNTS = ["½ tablet", "1 tablet", "2 tablets", "1 capsule", "2 capsules"];
 
 function choiceOf(f: Frequency | null): Choice | null {
   if (!f) return null;
@@ -46,15 +47,18 @@ const timesFor = (f: Frequency | null, n: number) =>
 export default function SchedulePicker({
   drugName,
   initial,
+  initialAmount,
   onSave,
   saveLabel = "Save",
 }: {
   drugName: string;
   initial: Frequency | null;
-  onSave: (plan: Frequency) => void | Promise<void>;
+  initialAmount?: string;
+  onSave: (plan: Frequency, amount: string) => void | Promise<void>;
   saveLabel?: string;
 }) {
   const today = localDate();
+  const [amount, setAmount] = useState(initialAmount ?? "");
   const [choice, setChoice] = useState<Choice | null>(choiceOf(initial));
   const [times, setTimes] = useState<string[]>(initial && "times" in initial ? initial.times : ["08:00"]);
   const [minutes, setMinutes] = useState(initial?.kind === "interval" ? initial.minutes : 240);
@@ -268,9 +272,37 @@ export default function SchedulePicker({
 
       {fixedCount && timeInputs}
 
+      <div className="space-y-2">
+        <p className="text-base font-bold text-slate-900">How much each time? <span className="font-normal text-slate-500">(from the label)</span></p>
+        <div className="flex flex-wrap gap-2">
+          {AMOUNTS.map((a) => (
+            <button
+              key={a}
+              type="button"
+              aria-pressed={amount === a}
+              onClick={() => setAmount(amount === a ? "" : a)}
+              className={`px-3 py-2.5 rounded-xl border-2 text-base font-bold ${
+                amount === a ? "bg-indigo-600 border-indigo-600 text-white" : "bg-white border-slate-300 text-slate-700"
+              }`}
+            >
+              {a}
+            </button>
+          ))}
+        </div>
+        <input
+          type="text"
+          value={amount}
+          maxLength={40}
+          onChange={(e) => setAmount(e.target.value)}
+          placeholder="Or type it, e.g. 10 mg, 1 puff, 5 mL"
+          aria-label="How much each time"
+          className="w-full px-3 py-3 border-2 border-slate-300 rounded-xl text-base"
+        />
+      </div>
+
       {plan && valid && (
         <p className="text-base font-semibold text-slate-900 bg-slate-50 border border-slate-200 rounded-xl p-3">
-          {describePlan(plan)}
+          {amount.trim() ? `${amount.trim()}, ` : ""}{amount.trim() ? describePlan(plan).replace(/^./, (c) => c.toLowerCase()) : describePlan(plan)}
         </p>
       )}
       {choice === "weekly" && weekdays.length === 0 && <p className="text-sm text-amber-800">Pick at least one day.</p>}
@@ -283,7 +315,7 @@ export default function SchedulePicker({
       <button
         type="button"
         disabled={!valid}
-        onClick={() => plan && onSave(plan)}
+        onClick={() => plan && onSave(plan, amount.trim())}
         className="w-full py-3.5 bg-emerald-600 disabled:bg-slate-300 text-white text-lg font-bold rounded-xl"
       >
         {saveLabel}

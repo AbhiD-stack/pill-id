@@ -21,6 +21,19 @@ export interface MedicationPlan {
   drugName: string;
   ndc?: string;
   plan: Frequency;
+  amount?: string; // how much each time, e.g. "1 tablet", "2 capsules", "10 mg"
+  createdAt: number;
+}
+
+// A medicine the user typed in themselves because it isn't in the FDA list
+// (compounded, imported, brand-new, supplements...). Not verified.
+export interface CustomDrug {
+  id: string;
+  name: string;
+  imprint?: string;
+  color?: string; // FDA color words, comma-separated ("RED,BLUE")
+  shape?: string; // FDA shape word
+  scoreMarks?: string;
   createdAt: number;
 }
 
@@ -96,13 +109,14 @@ interface PillIDDb extends DBSchema {
   doses: { key: string; value: DoseRecord; indexes: { "by-date": string } };
   scans: { key: string; value: ScanRecord; indexes: { "by-time": number } };
   plans: { key: string; value: MedicationPlan };
+  customDrugs: { key: string; value: CustomDrug };
 }
 
 let dbPromise: Promise<IDBPDatabase<PillIDDb>> | null = null;
 
 function getDb() {
   if (!dbPromise) {
-    dbPromise = openDB<PillIDDb>("pill-id-v2", 4, {
+    dbPromise = openDB<PillIDDb>("pill-id-v2", 5, {
       async upgrade(db, oldVersion, _newVersion, tx) {
         if (oldVersion < 1) {
           const schedule = db.createObjectStore("schedule", { keyPath: "id" });
@@ -122,6 +136,9 @@ function getDb() {
           scans.createIndex("by-time", "at");
           db.createObjectStore("plans", { keyPath: "key" });
           if (oldVersion >= 1) await migrateToPlans(tx as unknown as MigrationTx);
+        }
+        if (oldVersion < 5) {
+          db.createObjectStore("customDrugs", { keyPath: "id" });
         }
       },
     });
@@ -170,7 +187,12 @@ export async function getMedications(): Promise<Medication[]> {
 
 // Sets how and when a medicine is taken (adds it if new); null takes it off
 // the schedule (as needed). Dose history is kept.
-export async function setMedicationPlan(drugName: string, ndc: string | undefined, plan: Frequency | null) {
+export async function setMedicationPlan(
+  drugName: string,
+  ndc: string | undefined,
+  plan: Frequency | null,
+  amount?: string,
+) {
   const db = await getDb();
   const key = medKey(drugName, ndc);
   if (!plan) {
@@ -178,7 +200,7 @@ export async function setMedicationPlan(drugName: string, ndc: string | undefine
     return;
   }
   const existing = await db.get("plans", key);
-  await db.put("plans", { key, drugName, ndc, plan, createdAt: existing?.createdAt ?? Date.now() });
+  await db.put("plans", { key, drugName, ndc, plan, amount: amount?.trim() || undefined, createdAt: existing?.createdAt ?? Date.now() });
 }
 
 export async function removeMedication(drugName: string, ndc?: string) {
@@ -265,4 +287,17 @@ export async function deleteScan(id: string) {
 export async function clearScans() {
   const db = await getDb();
   await db.clear("scans");
+}
+
+// ── Medicines the user added themselves ───────────────────────────────────
+export async function addCustomDrug(d: Omit<CustomDrug, "id" | "createdAt">): Promise<CustomDrug> {
+  const db = await getDb();
+  const full: CustomDrug = { ...d, id: crypto.randomUUID(), createdAt: Date.now() };
+  await db.put("customDrugs", full);
+  return full;
+}
+
+export async function getCustomDrugs(): Promise<CustomDrug[]> {
+  const db = await getDb();
+  return db.getAll("customDrugs");
 }
