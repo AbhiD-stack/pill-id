@@ -88,17 +88,18 @@ export function judgeMyPillMatch(ranked: MyPillMatch[], galleryTopScore: number)
 // letters to check.
 export type Thresholds = { REJECT: number; MATCH: number; MARGIN: number };
 //
-// snorm + both sides (real-model run with 24,000 scans of other people's
-// pills; limit on confirming them 0.1%): right medicine first 97.6% (91.9%
-// with a look-alike); "This is your X" 30.9% of scans, wrong 0.09%; "check
-// the letters" 68.0% (right one first 93%); own pill called "not yours"
-// 1.0%. Other people's pills: confirmed 0.088%, caught as "not yours"
-// 64.1%, the rest "check the letters".
+// snorm + both sides, strictest limit on confirming other people's pills
+// (real-model run: 8,000 scans of the patient's own pills, 24,000 of other
+// people's): right medicine first 97.6% (91.9% with a look-alike); "This is
+// your X" 24.0% of scans, wrong 0.07%; "check the letters" 74.9% (right one
+// first 93%); own pill called "not yours" 1.0%. Other people's pills:
+// confirmed 0.025% (about 1 in 4,000), caught as "not yours" 64.1%, the
+// rest "check the letters".
 export const MY_PILLS: { MODE: "raw" | "snorm"; PHOTOS: 1 | 2; raw: Thresholds; snorm: Thresholds } = {
   MODE: "snorm",
   PHOTOS: 2,
   raw: { REJECT: 0.94, MATCH: 0.97, MARGIN: 0.02 }, // fallback while a pill's statistics are missing
-  snorm: { REJECT: -6.2717, MATCH: 4.5737, MARGIN: 3.2584 },
+  snorm: { REJECT: -6.2717, MATCH: 5.5357, MARGIN: 0 },
 };
 
 export type ScanQuery = { embeddings: number[][]; cohort: number[][] | null };
