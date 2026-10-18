@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { contributePhoto, embedCanvases, type Embedded, type SearchResult } from "@/lib/api";
+import { contributePhoto, embedCanvases, errorMessage, type Embedded, type SearchResult } from "@/lib/api";
 import { addReferencePill, setMedicationPlan } from "@/lib/db";
 import type { Frequency } from "@/lib/schedule";
 import ImageCapture from "./ImageCapture";
@@ -65,12 +65,7 @@ export default function AddMedicine({
         }
       }
       if (!cancelled) {
-        const why =
-          lastErr instanceof TypeError
-            ? "Can't reach the Pill ID server (check the internet connection, and that the server is running)."
-            : lastErr instanceof Error
-              ? lastErr.message
-              : String(lastErr);
+        const why = errorMessage(lastErr);
         setError(`${why} This photo isn't prepared for checking yet. You can still save it; it will be prepared automatically next time the server is reachable.`);
       }
     })();

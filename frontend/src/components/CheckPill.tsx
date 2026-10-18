@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { embedCanvases, fetchCohort } from "@/lib/api";
+import { embedCanvases, errorMessage, fetchCohort } from "@/lib/api";
 import {
   getDoses, getMedications, getReferencePills, localDate, medKey, setDoseStatus, updateReferencePill,
   type Medication, type ReferencePill,
@@ -128,9 +128,7 @@ export default function CheckPill({
       }
     } catch (err: any) {
       setError(
-        err instanceof TypeError
-          ? "Can't reach the Pill ID server. Check your internet connection and try again."
-          : err?.message || String(err)
+        errorMessage(err)
       );
       setStage("front");
     }

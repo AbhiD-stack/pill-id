@@ -92,6 +92,17 @@ export interface PillLook {
 
 // A readable error for the person using the app (the server's own message
 // when it sent one, never raw HTML/JSON).
+// Plain-language message for a failed request. A TypeError means the browser
+// never got an answer: no internet, the server is off, or the browser
+// blocked the request (Chrome asks before a website may reach a device on
+// your own network, which is where the Pill ID server runs).
+export const CANT_REACH =
+  "Can't reach the Pill ID server. Check your internet connection. If your browser asked about \"local network access\", choose Allow (address bar icon > Site settings > Local network access), then reload.";
+export function errorMessage(err: unknown): string {
+  if (err instanceof TypeError) return CANT_REACH;
+  return err instanceof Error ? err.message : String(err);
+}
+
 async function apiError(response: Response, what: string): Promise<Error> {
   let detail = "";
   try {

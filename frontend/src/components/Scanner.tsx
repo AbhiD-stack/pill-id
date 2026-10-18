@@ -2,7 +2,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { identifyPill, readImprint, submitFeedback, type PillLook, type PillMatch, type SearchResult } from "@/lib/api";
+import { errorMessage, identifyPill, readImprint, submitFeedback, type PillLook, type PillMatch, type SearchResult } from "@/lib/api";
 import { addReferencePill, deleteScan, getMedications, getReferencePills, type ScanRecord } from "@/lib/db";
 import { saveScan, thumbFromUrl } from "@/lib/scanLog";
 import { scoreMyPills, judgeMyPillMatch, type MyPillVerdict } from "@/lib/myPills";
@@ -86,9 +86,7 @@ export default function Scanner() {
     } catch (err: any) {
       console.error("Scan failed:", err);
       setScanError(
-        err instanceof TypeError
-          ? "Can't reach the Pill ID server. Check your internet connection and try again."
-          : err?.message || String(err)
+        errorMessage(err)
       );
       setStage("capture-front");
       return;

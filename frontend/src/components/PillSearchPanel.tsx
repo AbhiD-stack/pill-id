@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { getCustomDrugs } from "@/lib/db";
 import CustomDrugForm, { customToResult } from "./CustomDrugForm";
-import { searchByName, searchByAppearance, type SearchResult } from "@/lib/api";
+import { errorMessage, searchByName, searchByAppearance, type SearchResult } from "@/lib/api";
 import PillThumb from "./PillThumb";
 import AddToMedsButton from "./AddToMedsButton";
 import { SHAPE_OPTIONS, COLOR_OPTIONS, SCORE_MARK_OPTIONS, SCORE_MARK_LABELS, shapeIconPath, scoreMarkLines } from "@/lib/pillAppearance";
@@ -90,7 +90,7 @@ export default function PillSearchPanel({
       setStatus("idle");
     } catch (err: any) {
       setResults(mine);
-      setErrorMsg(err?.message || String(err));
+      setErrorMsg(errorMessage(err));
       setStatus("error");
     }
   }
@@ -121,7 +121,7 @@ export default function PillSearchPanel({
       setStatus("idle");
     } catch (err: any) {
       setResults(mine);
-      setErrorMsg(err?.message || String(err));
+      setErrorMsg(errorMessage(err));
       setStatus("error");
     }
   }
