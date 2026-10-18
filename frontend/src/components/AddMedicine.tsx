@@ -45,14 +45,33 @@ export default function AddMedicine({
     if (step !== "name" || !front || embeddings) return;
     let cancelled = false;
     (async () => {
-      try {
-        const e = await embedCanvases(front, back);
-        if (!cancelled) setEmbeddings(e);
-      } catch (err) {
-        console.error("Preparing the photo failed:", err);
-        if (!cancelled) {
-          setError("Can't reach the Pill ID server, so this photo can't be prepared for checking. You can still save it and it will be prepared later.");
+      // A few tries over ~30 s: the server may be starting up (it takes a
+      // minute to load the model) or a request may drop on the way.
+      const waits = [0, 3000, 6000, 9000, 12000];
+      let lastErr: unknown = null;
+      for (const wait of waits) {
+        if (wait) await new Promise((r) => setTimeout(r, wait));
+        if (cancelled) return;
+        try {
+          const e = await embedCanvases(front, back);
+          if (!cancelled) {
+            setEmbeddings(e);
+            setError(null);
+          }
+          return;
+        } catch (err) {
+          lastErr = err;
+          console.error("Preparing the photo failed (will retry):", err);
         }
+      }
+      if (!cancelled) {
+        const why =
+          lastErr instanceof TypeError
+            ? "Can't reach the Pill ID server (check the internet connection, and that the server is running)."
+            : lastErr instanceof Error
+              ? lastErr.message
+              : String(lastErr);
+        setError(`${why} This photo isn't prepared for checking yet. You can still save it; it will be prepared automatically next time the server is reachable.`);
       }
     })();
     return () => {

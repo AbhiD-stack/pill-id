@@ -106,6 +106,7 @@ async function apiError(response: Response, what: string): Promise<Error> {
     // body unreadable
   }
   if (response.status === 429) return new Error(detail || "Too many requests. Please wait a moment and try again.");
+  if (response.status === 503 && detail) return new Error(detail.replace(/;.*$/, ".").replace(/\.?$/, ". Try again in a minute."));
   if (response.status >= 500) return new Error(`The server had a problem (${what}). Please try again in a moment.`);
   return new Error(detail || `${what} failed (error ${response.status}).`);
 }
