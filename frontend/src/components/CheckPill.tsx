@@ -290,6 +290,12 @@ function Confirmed({ match, scan }: { match: MedMatch; scan: string }) {
             You take it: {med.buckets.map((b) => SLOTS.find((s) => s.key === b)!.label).join(", ")}
           </p>
         )}
+        {match.pill.imprint && (
+          <p className="text-base text-slate-800 mt-2 bg-white/70 rounded-xl px-3 py-2">
+            Double-check: the letters on it should say{" "}
+            <span className="font-mono font-bold">{match.pill.imprint.replace(/;/g, " ")}</span>
+          </p>
+        )}
         <button onClick={() => speak(`This is your ${name}`)} className="mt-3 px-3 py-2 bg-white border border-emerald-300 text-emerald-800 font-bold rounded-xl">
           🔊 Read aloud
         </button>

@@ -16,8 +16,10 @@ export type MyPillMatch = { pill: ReferencePill; score: number };
 // phone-photo data yet -- revisit once there's a test set of re-scans.
 // "strong" also requires beating the best gallery match, so an unrelated
 // pill that merely resembles a saved one doesn't get a confident banner.
-export const MY_PILL_STRONG = 0.8;
-export const MY_PILL_POSSIBLE = 0.7;
+// Calibrated with eval_my_pills.py (V3 + LoRA, 8,000 simulated scans of
+// real ePillID phone photos): same values as MY_PILLS below.
+export const MY_PILL_STRONG = 0.97;
+export const MY_PILL_POSSIBLE = 0.94;
 const STRONG_MARGIN_OVER_GALLERY = 0.02;
 const POSSIBLE_MARGIN_UNDER_GALLERY = 0.05;
 
@@ -54,7 +56,7 @@ export function judgeMyPillMatch(ranked: MyPillMatch[], galleryTopScore: number)
   if (!best) return null;
   // A second saved pill scoring almost as high means the photo can't tell
   // them apart -- surface it so the user compares both.
-  const runnerUp = ranked[1] && best.score - ranked[1].score < 0.03 ? ranked[1] : null;
+  const runnerUp = ranked[1] && best.score - ranked[1].score < 0.02 ? ranked[1] : null;
   if (best.score >= MY_PILL_STRONG && best.score >= galleryTopScore + STRONG_MARGIN_OVER_GALLERY) {
     return { kind: "strong", match: best, runnerUp };
   }
@@ -72,11 +74,14 @@ export function judgeMyPillMatch(ranked: MyPillMatch[], galleryTopScore: number)
 // the safety net -- a spouse's pill or a wrong pill in the organizer must
 // not be forced onto one of the patient's medicines.
 //
-// Thresholds: set from backend/scripts/eval_my_pills.py (real phone photos,
-// simulated households incl. look-alikes and other people's pills). Until
-// that runs on the real model these are deliberately cautious: more
-// "check the letters", fewer confident answers.
-export const MY_PILLS = { REJECT: 0.65, MATCH: 0.85, MARGIN: 0.05 };
+// Thresholds from backend/scripts/eval_my_pills.py on the real V3 model
+// (4,000 normal + 4,000 look-alike households of real ePillID phone photos,
+// plus other people's pills). Right medicine first: 96% (89% with a
+// look-alike in the household). With these: "This is your X" 59% of scans,
+// wrong 0.9%; "check the letters" 35%; false "not yours" 4.5%; other
+// people's pills caught 84%, wrongly confirmed 1.7%. Optimistic: V3 trained
+// on these photos. Confirmed answers also show the letters to check.
+export const MY_PILLS = { REJECT: 0.94, MATCH: 0.97, MARGIN: 0.02 };
 
 export type MedMatch = { key: string; pill: ReferencePill; score: number };
 
