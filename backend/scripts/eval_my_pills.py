@@ -266,7 +266,7 @@ def main() -> int:
     # A setting only counts as useful if at least this share of scans of the
     # patient's own pills get a confident, correct answer (otherwise almost
     # everything would be "check the letters").
-    MIN_USEFUL = 0.30
+    MIN_USEFUL = 0.20
     BARS = ((0.00025, 0.001, 0.01), (0.0005, 0.001, 0.01), (0.001, 0.001, 0.01),
             (0.0025, 0.0025, 0.02), (0.005, 0.005, 0.03), (0.01, 0.01, 0.05))
     print("\n=== My Pills on real phone photos ===")
@@ -326,7 +326,7 @@ def main() -> int:
         alt = search(G, I, bar)
         if alt:
             print(f"    <= {bar[0]:.3%}: confident & right {alt[0]:.1%}, others' pills caught as 'not yours' {alt[4]:.1%}, "
-                  f"confirmed {alt[5]:.3%}")
+                  f"confirmed {alt[5]:.3%}  [REJECT={alt[1]:.4f} MATCH={alt[2]:.4f} MARGIN={alt[3]:.4f}]")
         else:
             print(f"    <= {bar[0]:.3%}: not reachable")
     print("\nRecommended app settings (paste to Claude):")
