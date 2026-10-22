@@ -67,8 +67,17 @@ class ProjectionHead(nn.Module):
         return {"emb": emb, "logits": logits}
 
 
+# Gallery images from non-US datasets that slipped into the V3 gallery
+# despite the US-only data policy (pill-scanner/data/DATA_SOURCES.md): a
+# Philippine drugstore set (~43k images, 21 local brands such as Tempra,
+# Decolgen). Never shown to US users, and they used to crowd real US pills
+# out of the candidate shortlist, so they are dropped at load.
+NON_US_SOURCES = ("pharmaceutical-drugs-and-vitamins-dataset",)
+
+
 class DinoV2PillClassifier:
-    def __init__(self, model_dir: Path, device: str = "auto"):
+    def __init__(self, model_dir: Path, device: str = "auto", lora_adapter_dir: Optional[Path] = None,
+                 label_meta_path: Optional[Path] = None):
         self.device = _resolve_device(device)
         print(f"[classifier] Using device: {self.device}")
 
@@ -83,9 +92,37 @@ class DinoV2PillClassifier:
         # Frozen DINOv2 backbone (weights downloaded from HuggingFace on first run).
         self.processor = AutoImageProcessor.from_pretrained(cfg["dinov2_model_id"])
         self.dinov2_model = AutoModel.from_pretrained(cfg["dinov2_model_id"])
-        self.dinov2_model.eval().to(self.device)
         for param in self.dinov2_model.parameters():
             param.requires_grad = False
+
+        # The reference gallery (deployed_ref_embeddings.pt) was computed AFTER
+        # the training run's LoRA fine-tune phase, i.e. through a backbone with
+        # this adapter applied -- not the plain base model. Serving must apply
+        # the same adapter before embedding a query image, or query and
+        # gallery embeddings come from two different backbones and every
+        # cosine-similarity score is silently wrong (not an error -- it just
+        # quietly returns worse/wrong matches with no indication anything is
+        # off). get_peft_model() always zero-inits a fresh adapter, so this
+        # must use PeftModel.from_pretrained to load the actual saved weights.
+        if lora_adapter_dir is not None and Path(lora_adapter_dir).exists():
+            from peft import PeftModel
+            self.dinov2_model = PeftModel.from_pretrained(self.dinov2_model, str(lora_adapter_dir))
+            print(f"[classifier] Applied LoRA adapter from {lora_adapter_dir}")
+        else:
+            print("[classifier] No LoRA adapter configured -- using the base DINOv2 backbone as-is. "
+                  "This is WRONG if the attached checkpoint was trained with run_lora=true "
+                  "(check config.json) -- query/gallery embeddings would come from different "
+                  "backbones.")
+        self.dinov2_model.eval().to(self.device)
+
+        self.label_meta: dict[str, dict] = {}
+        if label_meta_path is not None and Path(label_meta_path).exists():
+            with open(label_meta_path) as f:
+                self.label_meta = json.load(f)
+            print(f"[classifier] Loaded label metadata (category/tier) for {len(self.label_meta)} labels.")
+        else:
+            print("[classifier] No label_meta.json found -- restricted-gallery search (RX/OTC) "
+                  "unavailable; predict_topk will search the full unrestricted gallery only.")
 
         self.projection_head = ProjectionHead(
             in_dim=ckpt["in_dim"],
@@ -104,12 +141,68 @@ class DinoV2PillClassifier:
         self.ref_label_indices = ref_data["label_indices"].to(self.device)
         self.label_strings = np.array(ckpt["label_classes"])
         self.ref_abs_paths = np.array(ref_data["abs_paths"])
+        drop = np.array([any(s in str(p) for s in NON_US_SOURCES) for p in self.ref_abs_paths])
+        if drop.any():
+            keep = torch.from_numpy(~drop).to(self.device)
+            self.ref_embeddings = self.ref_embeddings[keep]
+            self.ref_label_indices = self.ref_label_indices[keep]
+            self.ref_abs_paths = self.ref_abs_paths[~drop]
+            print(f"[classifier] Left out {int(drop.sum())} gallery images from non-US datasets.")
 
         self.num_reference_pills = int(self.label_strings.shape[0])
         print(
             f"[classifier] Loaded {self.ref_embeddings.shape[0]} reference embeddings "
             f"across {self.num_reference_pills} pill classes."
         )
+
+        # Category masks for the "ask RX/OTC/don't know" app mode: RX or OTC
+        # searches every label in that category. These used to also require
+        # tier == "priority", which hid ~87% of labels (27k of 31k) -- any
+        # pill from a manufacturer/repackager outside the priority list
+        # (e.g. a store-brand acetaminophen) could never be returned at all,
+        # however good the photo. The priority-only eval numbers don't apply
+        # to this wider search; the unrestricted full gallery is used when
+        # the caller doesn't supply rx_or_otc or no label_meta.json loaded.
+        self._restricted_masks: dict[str, torch.Tensor] = {}
+        if self.label_meta:
+            for cat in ("RX", "OTC"):
+                mask = torch.tensor(
+                    [self.label_meta.get(str(lbl), {}).get("category") == cat for lbl in self.label_strings],
+                    dtype=torch.bool, device=self.device,
+                )
+                if mask.any():
+                    self._restricted_masks[cat] = mask
+                    print(f"[classifier] Category mask for {cat}: {int(mask.sum())} labels.")
+
+    @torch.no_grad()
+    def cohort_stats(self, embeddings: torch.Tensor, skip: int = 10, k: int = 50) -> torch.Tensor:
+        """(n, 2) mean and std of each embedding's similarity to a "crowd" of
+        other pills: its catalog neighbors ranked skip+1 .. skip+k (the top
+        `skip` may be the same pill, so they're left out). Used to normalize
+        My Pills scores: a match must stand out from how similar the photo is
+        to pills in general (cohort / S-norm, as in face verification)."""
+        out = []
+        ref = self.ref_embeddings
+        for chunk in torch.split(F.normalize(embeddings.float().to(self.device), dim=1), 256):
+            top = (chunk @ ref.T).topk(skip + k, dim=1).values[:, skip:]
+            out.append(torch.stack([top.mean(1), top.std(1).clamp_min(1e-4)], dim=1))
+        return torch.cat(out).cpu()
+
+    def add_to_gallery(self, embeddings: torch.Tensor, labels: List[str], paths: List[str]) -> int:
+        """Adds reference images found after training (real pill photos from
+        drug labels, see scripts/build_photo_gallery.py) to existing labels.
+        Must be embedded with this same model + adapter. Returns how many
+        were added; images for labels the gallery doesn't have are skipped."""
+        index = {str(l): i for i, l in enumerate(self.label_strings)}
+        keep = [i for i, l in enumerate(labels) if l in index]
+        if not keep or embeddings.shape[1] != self.ref_embeddings.shape[1]:
+            return 0
+        emb = F.normalize(embeddings[keep].float().to(self.device), dim=1)
+        idx = torch.tensor([index[labels[i]] for i in keep], device=self.device, dtype=self.ref_label_indices.dtype)
+        self.ref_embeddings = torch.cat([self.ref_embeddings, emb], dim=0)
+        self.ref_label_indices = torch.cat([self.ref_label_indices, idx], dim=0)
+        self.ref_abs_paths = np.concatenate([self.ref_abs_paths, np.array([paths[i] for i in keep])])
+        return len(keep)
 
     @torch.no_grad()
     def _embed(self, image: Image.Image) -> torch.Tensor:
@@ -125,35 +218,134 @@ class DinoV2PillClassifier:
         return F.normalize(emb, dim=1)
 
     @torch.no_grad()
-    def predict_topk(self, image: Image.Image, k: int = 10) -> List[Prediction]:
-        query_emb = self._embed(image)
-        similarities = (query_emb @ self.ref_embeddings.T).squeeze(0)
+    def embed_images(self, images: List[Image.Image]) -> torch.Tensor:
+        """(n, embedding_dim) L2-normalized embeddings, one row per image --
+        the same space as the reference gallery, so callers can also compare
+        against their own saved pill photos ("My Pills")."""
+        return torch.cat([self._embed(img) for img in images], dim=0)
 
-        # Best similarity per pill label.
+    @torch.no_grad()
+    def _best_per_label(self, query_emb: torch.Tensor, label_mask: Optional[torch.Tensor] = None
+                         ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Returns (scores_by_label, similarities) for a single (1, d) query
+        embedding. label_mask (True = included), when given, excludes
+        everything else by forcing it to -inf -- same effect as not having
+        those labels in the gallery, without needing a second copy of
+        ref_embeddings per mode."""
+        similarities = (query_emb @ self.ref_embeddings.T).squeeze(0)
         scores_by_label = torch.full(
             (self.label_strings.shape[0],), -torch.inf, device=self.device
         )
         scores_by_label.scatter_reduce_(
             0, self.ref_label_indices, similarities, reduce="amax", include_self=True
         )
+        if label_mask is not None:
+            scores_by_label = scores_by_label.masked_fill(~label_mask, -torch.inf)
+        return scores_by_label, similarities
 
-        k = min(k, self.num_reference_pills)
+    def ref_path_for_label(self, label: str) -> Optional[str]:
+        """A representative reference-image path for a label, independent of
+        any query image -- used by name/appearance search, which has no
+        photo to score similarity against."""
+        matches = np.nonzero(self.label_strings == label)[0]
+        if matches.size == 0:
+            return None
+        label_idx = int(matches[0])
+        mask = (self.ref_label_indices == label_idx).cpu().numpy()
+        idxs = np.nonzero(mask)[0]
+        if idxs.size == 0:
+            return None
+        return str(self.ref_abs_paths[idxs[0]])
+
+    def has_restricted_mode(self, rx_or_otc: Optional[str]) -> bool:
+        """Whether predict_topk(_multi) will actually restrict the gallery
+        for this value, vs. silently falling back to the unrestricted
+        search. Lets callers report which mode a response actually used."""
+        return bool(rx_or_otc) and rx_or_otc in self._restricted_masks
+
+    @torch.no_grad()
+    def predict_topk(self, image: Image.Image, k: int = 10, rx_or_otc: Optional[str] = None) -> List[Prediction]:
+        return self.predict_topk_multi([image], k=k, rx_or_otc=rx_or_otc)
+
+    @torch.no_grad()
+    def predict_topk_multi(self, images: List[Image.Image], k: int = 10,
+                            rx_or_otc: Optional[str] = None) -> List[Prediction]:
+        """Front/back-aware retrieval: each image is scored independently and the
+        per-label scores are averaged (mean aggregation), matching the sidepair
+        fusion strategy validated during training. Falls back to a single image
+        seamlessly (the average of one value is itself).
+
+        rx_or_otc: "RX" or "OTC" restricts to that category's priority-tier
+        labels only (the "ask RX/OTC/don't know" app mode, and the search
+        mode the training gate's 93-98% numbers were measured against). Any
+        other value (None, "unknown", or a category with no loaded mask)
+        falls back to the full unrestricted gallery -- always available,
+        just measured lower (~89.5% top10)."""
+        return self.predict_topk_from_embeddings(self.embed_images(images), k=k, rx_or_otc=rx_or_otc)
+
+    @torch.no_grad()
+    def predict_topk_from_embeddings(self, query_embs: torch.Tensor, k: int = 10,
+                                     rx_or_otc: Optional[str] = None) -> List[Prediction]:
+        """predict_topk_multi for already-computed embed_images() output, so
+        a caller that also needs the embeddings doesn't run the backbone twice."""
+        label_mask = self._restricted_masks.get(rx_or_otc) if rx_or_otc else None
+        per_image = [self._best_per_label(q.unsqueeze(0), label_mask=label_mask) for q in query_embs]
+        scores_by_label = torch.stack([s for s, _ in per_image], dim=0).mean(dim=0)
+        similarities_per_image = [sims for _, sims in per_image]
+
+        k = min(k, int((scores_by_label > -torch.inf).sum().item()))
         top_scores, top_label_indices = scores_by_label.topk(k)
-
-        predictions: List[Prediction] = []
-        for score, label_idx in zip(top_scores.cpu().tolist(), top_label_indices):
-            mask = self.ref_label_indices == label_idx
-            sims_for_label = similarities[mask]
-            ref_path = "N/A"
-            if sims_for_label.numel() > 0:
-                best_local = torch.argmax(sims_for_label)
-                global_idx = torch.nonzero(mask).squeeze(1)[best_local]
-                ref_path = str(self.ref_abs_paths[global_idx.item()])
-            predictions.append(
-                Prediction(
-                    label=str(self.label_strings[label_idx.item()]),
-                    score=float(score),
-                    ref_path=ref_path,
-                )
+        return [
+            Prediction(
+                label=str(self.label_strings[label_idx.item()]),
+                score=float(score),
+                ref_path=self._best_ref_path(label_idx, similarities_per_image),
             )
-        return predictions
+            for score, label_idx in zip(top_scores.cpu().tolist(), top_label_indices)
+        ]
+
+    def _best_ref_path(self, label_idx, similarities_per_image) -> str:
+        """Best-matching reference image across whichever side (front/back)
+        scored the label highest, not just the first image."""
+        mask = self.ref_label_indices == label_idx
+        ref_path = "N/A"
+        best_sim = -torch.inf
+        for sims in similarities_per_image:
+            sims_for_label = sims[mask]
+            if sims_for_label.numel() == 0:
+                continue
+            local_best = torch.argmax(sims_for_label)
+            local_best_val = sims_for_label[local_best].item()
+            if local_best_val > best_sim:
+                best_sim = local_best_val
+                global_idx = torch.nonzero(mask).squeeze(1)[local_best]
+                ref_path = str(self.ref_abs_paths[global_idx.item()])
+        return ref_path
+
+    @torch.no_grad()
+    def predictions_for_labels(self, query_embs: torch.Tensor, labels: List[str],
+                               top: Optional[int] = None) -> List[Prediction]:
+        """Visual scores for specific labels (e.g. candidates found by imprint
+        search that the visual top-k missed), scored exactly like
+        predict_topk_from_embeddings. Labels not in the gallery are skipped.
+        top: keep only the best-scoring N (cheap even for thousands of labels)."""
+        if not hasattr(self, "_label_index"):
+            self._label_index = {str(l): i for i, l in enumerate(self.label_strings)}
+        idxs = [self._label_index[l] for l in labels if l in self._label_index]
+        if not idxs:
+            return []
+        per_image = [self._best_per_label(q.unsqueeze(0)) for q in query_embs]
+        scores_by_label = torch.stack([s for s, _ in per_image], dim=0).mean(dim=0)
+        sims = [s for _, s in per_image]
+        if top is not None and len(idxs) > top:
+            idx_t = torch.tensor(idxs, device=scores_by_label.device)
+            idxs = idx_t[scores_by_label[idx_t].topk(top).indices].tolist()
+        return [
+            Prediction(
+                label=str(self.label_strings[i]),
+                score=float(scores_by_label[i].item()),
+                ref_path=self._best_ref_path(torch.tensor(i, device=self.device), sims),
+            )
+            for i in idxs
+            if torch.isfinite(scores_by_label[i])  # a label with no gallery images can't be scored
+        ]

@@ -224,3 +224,27 @@ backend/node_modules/
 # the Next.js frontend's lib directory — un-ignore it explicitly.
 !frontend/lib/
 !frontend/src/lib/
+
+# Reference-image thumbnails built locally by scripts/collect_thumbnails.py
+# (~1.2GB) -- local-only, never committed. See that script's docstring.
+backend/app/data/thumbnails/
+# progress file from scripts/fill_missing_drug_info.py
+backend/app/data/ndc_names.fill_checked.json
+backend/app/data/ndc_names.checked.json
+
+# local data from scripts/fetch_label_pill_photos.py
+backend/app/data/label_image_cache/
+backend/label_photo_preview.html
+backend/thumbnail_preview.html
+
+# Users' scan photos and answers (private data)
+feedback/
+# built locally by scripts/build_photo_gallery.py
+backend/app/data/photo_gallery.pt
+backend/photo_gallery_rejected.txt
+backend/eval_results.csv
+backend/my_pills_embeddings.npz
+# pill photos people shared when setting up a medicine
+contributions/
+backend/my_pills_embeddings_own.npz
+backend/my_pills_embeddings*_cohort.npz

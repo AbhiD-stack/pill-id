@@ -1,5 +1,5 @@
 {
-  "_source_note": "This is a SMALL STARTER SAMPLE for wiring the app together. Replace with the full AGS Beers Criteria \u00ae table before your physician-audit day. Do not distribute the full copyrighted table publicly without checking AGS licensing terms for your use case.",
+  "_source_note": "A reference subset covering major AGS Beers Criteria ® drug classes, written in original wording (not a verbatim reproduction of the copyrighted table). Matching is substring-based against the scanned drug's full name/strength/form string. Not exhaustive and not a substitute for pharmacist or clinician review -- it does not account for dose, duration, or diagnosis-specific exceptions the full criteria define. Do not distribute the full copyrighted AGS table publicly without checking AGS licensing terms for your use case.",
   "flagged_drugs": [
     {
       "drug_name": "diphenhydramine",
@@ -10,12 +10,100 @@
       "recommendation": "Avoid. Consider second-generation antihistamine instead."
     },
     {
+      "drug_name": "hydroxyzine",
+      "aliases": ["vistaril", "atarax"],
+      "category": "Anticholinergic / First-gen antihistamine",
+      "risk_level": "high",
+      "rationale": "Highly anticholinergic; confusion, dry mouth, constipation, falls risk.",
+      "recommendation": "Avoid. Consider non-anticholinergic alternative."
+    },
+    {
+      "drug_name": "chlorpheniramine",
+      "aliases": ["chlor-trimeton"],
+      "category": "Anticholinergic / First-gen antihistamine",
+      "risk_level": "high",
+      "rationale": "Anticholinergic burden; confusion, dry mouth, constipation, falls risk.",
+      "recommendation": "Avoid. Consider second-generation antihistamine instead."
+    },
+    {
+      "drug_name": "doxylamine",
+      "aliases": ["unisom"],
+      "category": "Anticholinergic / First-gen antihistamine",
+      "risk_level": "high",
+      "rationale": "Anticholinergic burden, especially as a sleep aid; confusion, falls risk.",
+      "recommendation": "Avoid as a sleep aid."
+    },
+    {
+      "drug_name": "meclizine",
+      "aliases": ["antivert", "bonine"],
+      "category": "Anticholinergic / First-gen antihistamine",
+      "risk_level": "moderate",
+      "rationale": "Anticholinergic effects; sedation, confusion, dry mouth.",
+      "recommendation": "Use shortest duration possible; consider alternatives for chronic vertigo."
+    },
+    {
+      "drug_name": "promethazine",
+      "aliases": ["phenergan"],
+      "category": "Anticholinergic / First-gen antihistamine",
+      "risk_level": "high",
+      "rationale": "Strongly anticholinergic and sedating.",
+      "recommendation": "Avoid when alternatives exist."
+    },
+    {
       "drug_name": "alprazolam",
       "aliases": ["xanax"],
-      "category": "Benzodiazepine",
+      "category": "Benzodiazepine (short/intermediate-acting)",
       "risk_level": "high",
       "rationale": "Increased risk of cognitive impairment, delirium, falls, fractures, and motor vehicle accidents in older adults.",
       "recommendation": "Avoid for insomnia, agitation, or anxiety except in specific situations (seizure disorders, REM sleep disorder, benzodiazepine withdrawal)."
+    },
+    {
+      "drug_name": "lorazepam",
+      "aliases": ["ativan"],
+      "category": "Benzodiazepine (short/intermediate-acting)",
+      "risk_level": "high",
+      "rationale": "Increased risk of cognitive impairment, delirium, falls, and fractures in older adults.",
+      "recommendation": "Avoid except in specific situations; use lowest effective dose if needed."
+    },
+    {
+      "drug_name": "temazepam",
+      "aliases": ["restoril"],
+      "category": "Benzodiazepine (short/intermediate-acting)",
+      "risk_level": "high",
+      "rationale": "Increased risk of cognitive impairment, falls, and fractures.",
+      "recommendation": "Avoid for insomnia; consider non-pharmacologic approaches first."
+    },
+    {
+      "drug_name": "diazepam",
+      "aliases": ["valium"],
+      "category": "Benzodiazepine (long-acting)",
+      "risk_level": "high",
+      "rationale": "Long half-life increases accumulation risk; cognitive impairment, falls, fractures.",
+      "recommendation": "Avoid; higher risk than shorter-acting agents in this class."
+    },
+    {
+      "drug_name": "clonazepam",
+      "aliases": ["klonopin"],
+      "category": "Benzodiazepine (long-acting)",
+      "risk_level": "high",
+      "rationale": "Long half-life increases accumulation risk; cognitive impairment, falls, fractures.",
+      "recommendation": "Avoid except in specific situations (e.g. seizure disorders)."
+    },
+    {
+      "drug_name": "zolpidem",
+      "aliases": ["ambien"],
+      "category": "Sedative-hypnotic (\"Z-drug\")",
+      "risk_level": "high",
+      "rationale": "Similar adverse-event profile to benzodiazepines (falls, cognitive impairment) with minimal sleep benefit; risk rises with duration of use.",
+      "recommendation": "Avoid, especially beyond short-term use."
+    },
+    {
+      "drug_name": "eszopiclone",
+      "aliases": ["lunesta"],
+      "category": "Sedative-hypnotic (\"Z-drug\")",
+      "risk_level": "high",
+      "rationale": "Similar adverse-event profile to benzodiazepines; risk rises with duration of use.",
+      "recommendation": "Avoid, especially beyond short-term use."
     },
     {
       "drug_name": "glyburide",
@@ -24,6 +112,14 @@
       "risk_level": "moderate",
       "rationale": "Prolonged hypoglycemia risk in older adults.",
       "recommendation": "Avoid; prefer shorter-acting sulfonylureas if this class is needed."
+    },
+    {
+      "drug_name": "chlorpropamide",
+      "aliases": [],
+      "category": "Sulfonylurea (long-acting)",
+      "risk_level": "moderate",
+      "rationale": "Prolonged hypoglycemia risk; can also cause SIADH (low sodium).",
+      "recommendation": "Avoid; prefer shorter-acting agents."
     },
     {
       "drug_name": "nifedipine",
@@ -40,6 +136,214 @@
       "risk_level": "moderate",
       "rationale": "GI bleeding/peptic ulcer risk increases with age; renal risk with chronic scheduled use.",
       "recommendation": "Avoid chronic scheduled use unless other alternatives are ineffective and a GI-protective agent is co-prescribed."
+    },
+    {
+      "drug_name": "naproxen",
+      "aliases": ["aleve"],
+      "category": "NSAID (chronic use)",
+      "risk_level": "moderate",
+      "rationale": "GI bleeding/peptic ulcer risk increases with age; renal risk with chronic scheduled use.",
+      "recommendation": "Avoid chronic scheduled use when possible."
+    },
+    {
+      "drug_name": "diclofenac",
+      "aliases": ["voltaren"],
+      "category": "NSAID (chronic use)",
+      "risk_level": "moderate",
+      "rationale": "GI bleeding/peptic ulcer risk increases with age; renal risk with chronic scheduled use.",
+      "recommendation": "Avoid chronic scheduled use when possible."
+    },
+    {
+      "drug_name": "indomethacin",
+      "aliases": ["indocin"],
+      "category": "NSAID (high-risk)",
+      "risk_level": "high",
+      "rationale": "Most adverse effects of any NSAID (GI bleeding, renal impairment, CNS effects).",
+      "recommendation": "Avoid."
+    },
+    {
+      "drug_name": "ketorolac",
+      "aliases": ["toradol"],
+      "category": "NSAID (high-risk)",
+      "risk_level": "high",
+      "rationale": "Most adverse effects of any NSAID (GI bleeding, renal impairment, CNS effects).",
+      "recommendation": "Avoid."
+    },
+    {
+      "drug_name": "amitriptyline",
+      "aliases": ["elavil"],
+      "category": "Tricyclic antidepressant",
+      "risk_level": "high",
+      "rationale": "Strong anticholinergic and sedating effects; orthostatic hypotension, falls risk.",
+      "recommendation": "Avoid. Consider newer-generation antidepressant."
+    },
+    {
+      "drug_name": "nortriptyline",
+      "aliases": ["pamelor"],
+      "category": "Tricyclic antidepressant",
+      "risk_level": "moderate",
+      "rationale": "Anticholinergic and sedating effects, though less than amitriptyline.",
+      "recommendation": "Use caution; consider newer-generation antidepressant."
+    },
+    {
+      "drug_name": "doxepin",
+      "aliases": ["sinequan"],
+      "category": "Tricyclic antidepressant",
+      "risk_level": "high",
+      "rationale": "Strong anticholinergic and sedating effects above low (≤6mg) doses.",
+      "recommendation": "Avoid doses above 6mg/day."
+    },
+    {
+      "drug_name": "cyclobenzaprine",
+      "aliases": ["flexeril"],
+      "category": "Skeletal muscle relaxant",
+      "risk_level": "high",
+      "rationale": "Anticholinergic effects, sedation, fracture risk; limited effectiveness at tolerable doses.",
+      "recommendation": "Avoid."
+    },
+    {
+      "drug_name": "carisoprodol",
+      "aliases": ["soma"],
+      "category": "Skeletal muscle relaxant",
+      "risk_level": "high",
+      "rationale": "Anticholinergic effects, sedation, fracture risk; limited effectiveness at tolerable doses.",
+      "recommendation": "Avoid."
+    },
+    {
+      "drug_name": "methocarbamol",
+      "aliases": ["robaxin"],
+      "category": "Skeletal muscle relaxant",
+      "risk_level": "moderate",
+      "rationale": "Sedation and fracture risk; limited effectiveness at tolerable doses.",
+      "recommendation": "Avoid when alternatives exist."
+    },
+    {
+      "drug_name": "oxybutynin",
+      "aliases": ["ditropan"],
+      "category": "Anticholinergic (urinary)",
+      "risk_level": "moderate",
+      "rationale": "Anticholinergic burden; confusion, dry mouth, constipation, urinary retention.",
+      "recommendation": "Caution; consider alternatives for overactive bladder."
+    },
+    {
+      "drug_name": "benztropine",
+      "aliases": ["cogentin"],
+      "category": "Anticholinergic (antiparkinsonian)",
+      "risk_level": "high",
+      "rationale": "Strong anticholinergic burden; confusion, constipation, urinary retention.",
+      "recommendation": "Avoid for prevention/treatment of extrapyramidal symptoms with antipsychotics; alternatives preferred."
+    },
+    {
+      "drug_name": "omeprazole",
+      "aliases": ["prilosec"],
+      "category": "Proton pump inhibitor",
+      "risk_level": "low",
+      "rationale": "Risk of C. difficile infection and bone loss/fractures with scheduled use beyond 8 weeks absent a high-risk indication.",
+      "recommendation": "Use lowest effective dose for shortest duration; reassess ongoing need beyond 8 weeks."
+    },
+    {
+      "drug_name": "pantoprazole",
+      "aliases": ["protonix"],
+      "category": "Proton pump inhibitor",
+      "risk_level": "low",
+      "rationale": "Risk of C. difficile infection and bone loss/fractures with scheduled use beyond 8 weeks absent a high-risk indication.",
+      "recommendation": "Use lowest effective dose for shortest duration; reassess ongoing need beyond 8 weeks."
+    },
+    {
+      "drug_name": "metoclopramide",
+      "aliases": ["reglan"],
+      "category": "Prokinetic / antiemetic",
+      "risk_level": "moderate",
+      "rationale": "Extrapyramidal effects, including tardive dyskinesia; risk increases with duration.",
+      "recommendation": "Avoid unless gastroparesis; limit to 12 weeks of use."
+    },
+    {
+      "drug_name": "meperidine",
+      "aliases": ["demerol"],
+      "category": "Opioid analgesic",
+      "risk_level": "high",
+      "rationale": "Not an effective oral analgesic at typical doses; neurotoxicity risk, including delirium.",
+      "recommendation": "Avoid; use alternative opioid analgesic if needed."
+    },
+    {
+      "drug_name": "megestrol",
+      "aliases": ["megace"],
+      "category": "Appetite stimulant",
+      "risk_level": "moderate",
+      "rationale": "Minimal effect on weight; increases thrombotic event and mortality risk.",
+      "recommendation": "Avoid."
+    },
+    {
+      "drug_name": "doxazosin",
+      "aliases": ["cardura"],
+      "category": "Alpha-1 blocker",
+      "risk_level": "moderate",
+      "rationale": "High risk of orthostatic hypotension when used as a routine antihypertensive.",
+      "recommendation": "Avoid as routine antihypertensive therapy."
+    },
+    {
+      "drug_name": "clonidine",
+      "aliases": ["catapres"],
+      "category": "Central alpha agonist",
+      "risk_level": "moderate",
+      "rationale": "High risk of adverse CNS effects, bradycardia, orthostatic hypotension.",
+      "recommendation": "Avoid as first-line antihypertensive."
+    },
+    {
+      "drug_name": "digoxin",
+      "aliases": ["lanoxin"],
+      "category": "Cardiac glycoside",
+      "risk_level": "moderate",
+      "rationale": "Reduced renal clearance increases toxicity risk at doses above 0.125mg/day.",
+      "recommendation": "Verify dosing (avoid >0.125mg/day) and renal function."
+    },
+    {
+      "drug_name": "amiodarone",
+      "aliases": ["cordarone", "pacerone"],
+      "category": "Antiarrhythmic",
+      "risk_level": "moderate",
+      "rationale": "QT-interval effects; thyroid, pulmonary, and hepatic toxicity.",
+      "recommendation": "Use only when other antiarrhythmics have failed; monitor thyroid/pulmonary/hepatic function."
+    },
+    {
+      "drug_name": "nitrofurantoin",
+      "aliases": ["macrobid", "macrodantin"],
+      "category": "Antibiotic",
+      "risk_level": "moderate",
+      "rationale": "Pulmonary toxicity risk, especially with reduced renal function or long-term suppressive use.",
+      "recommendation": "Avoid for long-term suppression or with reduced renal function."
+    },
+    {
+      "drug_name": "haloperidol",
+      "aliases": ["haldol"],
+      "category": "Antipsychotic",
+      "risk_level": "high",
+      "rationale": "Increased risk of cerebrovascular events and mortality in persons with dementia.",
+      "recommendation": "Use only after nonpharmacologic approaches fail and behavior poses safety risk."
+    },
+    {
+      "drug_name": "quetiapine",
+      "aliases": ["seroquel"],
+      "category": "Antipsychotic",
+      "risk_level": "high",
+      "rationale": "Increased risk of cerebrovascular events and mortality in persons with dementia.",
+      "recommendation": "Use only after nonpharmacologic approaches fail and behavior poses safety risk."
+    },
+    {
+      "drug_name": "risperidone",
+      "aliases": ["risperdal"],
+      "category": "Antipsychotic",
+      "risk_level": "high",
+      "rationale": "Increased risk of cerebrovascular events and mortality in persons with dementia.",
+      "recommendation": "Use only after nonpharmacologic approaches fail and behavior poses safety risk."
+    },
+    {
+      "drug_name": "phenobarbital",
+      "aliases": [],
+      "category": "Barbiturate",
+      "risk_level": "high",
+      "rationale": "High rate of physical dependence and tolerance; overdose risk at relatively low doses.",
+      "recommendation": "Avoid."
     }
   ]
 }

@@ -27,10 +27,10 @@ export default function Home() {
         >
           <div>
             <p className="text-xs font-bold uppercase tracking-wider text-sky-600">
-              Version 1
+              Original UI
             </p>
             <h2 className="mt-1 text-xl font-bold text-slate-900">
-              Original UI
+              Version 1
             </h2>
             <p className="mt-2 text-sm text-slate-500">
               The original crop-and-identify workflow.
@@ -42,27 +42,38 @@ export default function Home() {
         </Link>
 
         <Link
-          href="/v2"
+          href="/v3"
           className="group flex flex-col justify-between rounded-2xl border-2 border-slate-200 bg-white p-6 shadow-sm transition-all hover:border-indigo-500 hover:shadow-md"
         >
           <div>
             <p className="text-xs font-bold uppercase tracking-wider text-indigo-600">
-              Version 2
+              New UI
             </p>
             <h2 className="mt-1 text-xl font-bold text-slate-900">
-              New UI
+              Version 3
             </h2>
             <p className="mt-2 text-sm text-slate-500">
-              Camera capture, scheduling, and safety-check tabs.
+              Single-tap photo capture, RX/OTC-restricted search, scheduling
+              and safety-check tabs.
             </p>
           </div>
           <span className="mt-6 inline-flex items-center text-sm font-semibold text-indigo-600">
-            Open Version 2 →
+            Open Version 3 →
           </span>
         </Link>
       </div>
 
       <DisclaimerFooter />
+
+      {/* Visible build marker so a deploy can be confirmed from the live site
+          itself, without digging through the Vercel dashboard. Vercel sets
+          these automatically at build time; they're blank in local dev. */}
+      <p className="mt-8 text-center text-[11px] text-slate-400">
+        Build {process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "local-dev"}
+        {process.env.VERCEL_GIT_COMMIT_MESSAGE
+          ? ` · "${process.env.VERCEL_GIT_COMMIT_MESSAGE.split("\n")[0].slice(0, 60)}"`
+          : ""}
+      </p>
     </main>
   );
 }

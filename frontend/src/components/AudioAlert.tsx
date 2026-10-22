@@ -14,7 +14,9 @@ export function speak(text: string, opts?: { rate?: number; volume?: number }) {
 }
 
 export function vibrate(pattern: number | number[] = 200) {
-  if (typeof navigator !== "undefined" && "vibrate" in navigator) {
-    navigator.vibrate(pattern);
-  }
+  if (typeof navigator === "undefined" || !("vibrate" in navigator)) return;
+  // Browsers refuse (and log an error) before the user has touched the page.
+  const activation = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation;
+  if (activation && !activation.hasBeenActive) return;
+  navigator.vibrate(pattern);
 }
